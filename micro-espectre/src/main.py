@@ -484,7 +484,8 @@ def main():
             lowpass_cutoff=config.LOWPASS_CUTOFF,
             enable_hampel=config.ENABLE_HAMPEL_FILTER,
             hampel_window=config.HAMPEL_WINDOW,
-            hampel_threshold=config.HAMPEL_THRESHOLD
+            hampel_threshold=config.HAMPEL_THRESHOLD,
+            enable_features=config.ENABLE_FEATURES
         )
     
     # Initialize and start traffic generator (rate is static from config.py)
@@ -556,7 +557,7 @@ def main():
     
     # Calculate optimal sleep based on traffic rate
     publish_rate = traffic_gen.get_rate() if traffic_gen.is_running() else 100
-       
+    publish_rate = 50
     try:
         while True:
             loop_start = time.ticks_us()

@@ -36,7 +36,8 @@ class MVSDetector(IDetector):
                  lowpass_cutoff=17.5,
                  enable_hampel=False,
                  hampel_window=7,
-                 hampel_threshold=4.0):
+                 hampel_threshold=4.0,
+                 enable_features=False):
         """
         Initialize MVS detector.
         
@@ -48,6 +49,7 @@ class MVSDetector(IDetector):
             enable_hampel: Enable Hampel filter (default: False)
             hampel_window: Hampel window size (default: 7)
             hampel_threshold: Hampel threshold in MAD (default: 4.0)
+            enable_features: Enable feature extraction (default: False)
         """
         self._context = SegmentationContext(
             window_size=window_size,
@@ -56,7 +58,8 @@ class MVSDetector(IDetector):
             lowpass_cutoff=lowpass_cutoff,
             enable_hampel=enable_hampel,
             hampel_window=hampel_window,
-            hampel_threshold=hampel_threshold
+            hampel_threshold=hampel_threshold,
+            enable_features=enable_features
         )
         self._packet_count = 0
         self._motion_count = 0
