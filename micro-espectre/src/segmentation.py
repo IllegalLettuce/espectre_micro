@@ -215,18 +215,27 @@ class SegmentationContext:
         """
         Calculate spatial turbulence and store amplitudes for features
         
+        Turbulence uses selected_subcarriers (for motion detection).
+        Features use ALL subcarriers (for spatial classification).
+        
         Args:
             csi_data: array of int8 I/Q values (alternating real, imag)
-            selected_subcarriers: list of subcarrier indices to use (default: all up to 64)
-            
+            selected_subcarriers: list of subcarrier indices for turbulence calculation
+                
         Returns:
-            float: Standard deviation of amplitudes
+            float: Standard deviation of amplitudes (from selected subcarriers)
         
-        Note: Stores last amplitudes for feature calculation at publish time.
+        Note: Stores ALL 64 amplitudes for feature calculation at publish time.
         """
-        turbulence, amplitudes = self.compute_spatial_turbulence(csi_data, selected_subcarriers)
-        self.last_amplitudes = amplitudes
+        # Calculate turbulence from selected subcarriers (for motion detection)
+        turbulence, _ = self.compute_spatial_turbulence(csi_data, selected_subcarriers)
+        
+        # Store ALL amplitudes for spatial features (independent of band selection)
+        _, all_amplitudes = self.compute_spatial_turbulence(csi_data, selected_subcarriers=None)
+        self.last_amplitudes = all_amplitudes  # Use all 64 subcarriers for features!
+        
         return turbulence
+
     
     def _calculate_variance_two_pass(self):
         """

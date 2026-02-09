@@ -138,7 +138,15 @@ class MQTTHandler:
                 'variance_turb': round(features.get('variance_turb', 0), 3),
                 # W=1 features (current packet)
                 'skewness': round(features.get('skewness', 0), 3),
-                'kurtosis': round(features.get('kurtosis', 0), 3)
+                'kurtosis': round(features.get('kurtosis', 0), 3),
+                # Spatial amplitude features (for spatial classification)
+                'amp_mean': round(features.get('amp_mean', 0), 3),
+                'amp_range': round(features.get('amp_range', 0), 3),
+                'amp_std': round(features.get('amp_std', 0), 3),
+                # Subband features
+                'amp_mean_low': round(features.get('amp_mean_low', 0), 3),
+                'amp_mean_mid': round(features.get('amp_mean_mid', 0), 3),
+                'amp_mean_high': round(features.get('amp_mean_high', 0), 3),
             }
             
             # Add confidence score if available

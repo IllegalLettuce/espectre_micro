@@ -180,6 +180,87 @@ def calc_entropy_turb(turbulence_buffer, buffer_count, n_bins=10):
     
     return entropy
 
+# ============================================================================
+# Spatial Classification Features
+# ============================================================================
+
+def calc_amplitude_mean(amplitudes):
+    """
+    Calculates Mean amplitude
+
+    Args:
+        amplitudes (list): List of amplitudes
+
+    Returns:
+        float: Mean amplitude
+    """
+    if (len(amplitudes) == 0):
+        return 0.0
+    return sum(amplitudes) / len(amplitudes)
+
+def calc_amplitude_range(amplitudes):
+    """Calculates peak-to-peak range for spatial differences
+
+    Args:
+        amplitudes (list): List of amplitudes
+
+    Returns:
+        float: amplitude range
+    """
+    if (len(amplitudes) == 0):
+        return 0.0
+    return (max(amplitudes) - min(amplitudes))
+
+def calc_amplitude_standard_deviation(amplitudes):
+    """Calculate standard deviation of amplitudes
+    
+    Args:
+        amplitudes (list): List of amplitudes
+    
+    Returns:
+        float: Standard deviation
+    """
+    num_subcarriers = len(amplitudes)
+    if num_subcarriers < 2:
+        return 0.0
+    
+    mean = sum(amplitudes) / num_subcarriers
+    variance = sum((x - mean) ** 2 for x in amplitudes) / num_subcarriers
+    return math.sqrt(variance) if variance > 0 else 0.0
+
+def calc_subband_features(amplitudes):
+    """Calculates subband features
+
+    Args:
+        amplitudes (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    num_subcarriers = len(amplitudes)
+    if (num_subcarriers < 3):
+        return {
+            'amp_mean_low':0,
+            'amp_mean_mid':0,
+            'amp_mean_high':0
+        }
+        
+    third = num_subcarriers // 3
+    low_band = amplitudes[:third]
+    mid_band = amplitudes[third:2*third]
+    high_band = amplitudes[2*third:]
+    
+    print(f"[DEBUG] Total SC: {num_subcarriers}, Third: {third}")
+    print(f"[DEBUG] Low band indices: 0-{third-1}")
+    print(f"[DEBUG] Mid band indices: {third}-{2*third-1}")
+    print(f"[DEBUG] High band indices: {2*third}-{num_subcarriers-1}")
+    
+    return {
+        'amp_mean_low': sum(low_band) / len(low_band) if low_band else 0,
+        'amp_mean_mid': sum(mid_band) / len(mid_band) if mid_band else 0,
+        'amp_mean_high': sum(high_band) / len(high_band) if high_band else 0,
+    }
+    
 
 # ============================================================================
 # Feature Extractor (Publish-Time)
@@ -213,10 +294,12 @@ class PublishTimeFeatureExtractor:
             turbulence_buffer: Circular buffer of turbulence values
             buffer_count: Number of valid values in turbulence buffer
             moving_variance: Already calculated by MVS
+            amp_mean: Mean Amplitude
         
         Returns:
-            dict: All 5 features
+            dict: All 7 features
         """
+        subband_features = calc_subband_features(amplitudes)
         self.last_features = {
             # W=1 features (current packet)
             'skewness': calc_skewness(amplitudes),
@@ -226,6 +309,16 @@ class PublishTimeFeatureExtractor:
             'variance_turb': moving_variance,  # Already calculated by MVS!
             'iqr_turb': calc_iqr_turb(turbulence_buffer, buffer_count),
             'entropy_turb': calc_entropy_turb(turbulence_buffer, buffer_count),
+            
+            # Spatial classification features
+            'amp_mean': calc_amplitude_mean(amplitudes),
+            'amp_range': calc_amplitude_range(amplitudes),
+            'amp_std': calc_amplitude_standard_deviation(amplitudes),
+            
+            # Subband features
+            'amp_mean_low': subband_features['amp_mean_low'],
+            'amp_mean_mid': subband_features['amp_mean_mid'],
+            'amp_mean_high': subband_features['amp_mean_high'],
         }
         
         return self.last_features
