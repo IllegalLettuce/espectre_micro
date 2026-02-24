@@ -23,7 +23,6 @@ License: GPLv3
 """
 import math
 
-
 # ============================================================================
 # W=1 Features (Current Packet Amplitudes)
 # ============================================================================
@@ -229,13 +228,18 @@ def calc_amplitude_standard_deviation(amplitudes):
     return math.sqrt(variance) if variance > 0 else 0.0
 
 def calc_subband_features(amplitudes):
-    """Calculates subband features
+    """
+    Calculate mean amplitude for low, mid, and high frequency subbands.
+
+    Splits subcarriers into three equal bands and computes the mean of
+    each. Different spatial positions produce distinct subband energy
+    profiles due to frequency-selective multipath.
 
     Args:
-        amplitudes (_type_): _description_
+        amplitudes: List of subcarrier amplitudes
 
     Returns:
-        _type_: _description_
+        dict: Keys amp_mean_low, amp_mean_mid, amp_mean_high (floats)
     """
     num_subcarriers = len(amplitudes)
     if (num_subcarriers < 3):
@@ -250,17 +254,73 @@ def calc_subband_features(amplitudes):
     mid_band = amplitudes[third:2*third]
     high_band = amplitudes[2*third:]
     
-    print(f"[DEBUG] Total SC: {num_subcarriers}, Third: {third}")
-    print(f"[DEBUG] Low band indices: 0-{third-1}")
-    print(f"[DEBUG] Mid band indices: {third}-{2*third-1}")
-    print(f"[DEBUG] High band indices: {2*third}-{num_subcarriers-1}")
-    
     return {
         'amp_mean_low': sum(low_band) / len(low_band) if low_band else 0,
         'amp_mean_mid': sum(mid_band) / len(mid_band) if mid_band else 0,
         'amp_mean_high': sum(high_band) / len(high_band) if high_band else 0,
     }
+      
+def calc_phase_features(csi_raw):
+    """
+    Extract phase statistics from raw I/Q bytes.
+
+    Computes per-subcarrier phase angles from signed int8 I/Q pairs and
+    returns summary statistics. Phase is more sensitive to position than
+    amplitude because it encodes path length differences between the
+    transmitter, reflectors, and receiver.
+
+    Raw bytes from MicroPython bytearray are unsigned (0-255), so values
+    above 127 are sign-corrected to the range [-128, 127] before use.
+
+    Args:
+        csi_raw: Raw CSI bytes as bytearray (I0, Q0, I1, Q1, ...)
+
+    Returns:
+        dict: Keys phase_mean, phase_std, phase_range (floats, radians)
+    """
+    phases = []
+    for i in range(0, len(csi_raw) - 1, 2):
+        I = csi_raw[i] if csi_raw[i] < 128 else csi_raw[i] - 256
+        Q = csi_raw[i+1] if csi_raw[i+1] < 128 else csi_raw[i+1] - 256
+        if I != 0 or Q != 0:
+            phases.append(math.atan2(Q, I))
+    if len(phases) < 2:
+        return {'phase_mean': 0.0, 'phase_std': 0.0, 'phase_range': 0.0}
+    mean = sum(phases) / len(phases)
+    std = math.sqrt(sum((p - mean)**2 for p in phases) / len(phases))
+    return {
+        'phase_mean': round(mean, 4),
+        'phase_std': round(std, 4),
+        'phase_range': round(max(phases) - min(phases), 4)
+    }
+
     
+def calc_iqr_turb_real(turbulence_buffer, buffer_count):
+    """
+    Write all subcarrier amplitudes into a pre-allocated buffer.
+
+    Reuses the same list object on every call to avoid heap allocation
+    on the ESP32, which reduces GC pressure during the main loop.
+
+    Args:
+        amplitudes: List of subcarrier amplitudes (up to 64 values)
+        buf: Pre-allocated list of length 64 (mutated in place)
+
+    Returns:
+        list: The same buf object, updated with current amplitudes
+              rounded to 2 decimal places
+    """
+    buf = sorted(turbulence_buffer[:buffer_count])
+    n = len(buf)
+    q1 = buf[n // 4]
+    q3 = buf[(3 * n) // 4]
+    return q3 - q1
+
+def calc_all_subcarrier_amps(amplitudes, buf):
+    """Write all amplitudes into pre-allocated buffer."""
+    for i in range(min(len(amplitudes), len(buf))):
+        buf[i] = round(amplitudes[i], 2)  # 2dp saves ~30 bytes vs 3dp
+    return buf
 
 # ============================================================================
 # Feature Extractor (Publish-Time)
@@ -284,8 +344,9 @@ class PublishTimeFeatureExtractor:
     def __init__(self):
         """Initialize feature extractor."""
         self.last_features = None
+        self._sc_buf = [0.0] * 64  # pre-allocated, reused every call
     
-    def compute_features(self, amplitudes, turbulence_buffer, buffer_count, moving_variance):
+    def compute_features(self, amplitudes, turbulence_buffer, buffer_count, moving_variance, csi_raw=None, selected_indices=None):
         """
         Compute all features at publish time.
         
@@ -300,6 +361,10 @@ class PublishTimeFeatureExtractor:
             dict: All 7 features
         """
         subband_features = calc_subband_features(amplitudes)
+        phase_features = calc_phase_features(csi_raw) if csi_raw is not None else {
+            'phase_mean': 0.0, 'phase_std': 0.0, 'phase_range': 0.0
+        }
+
         self.last_features = {
             # W=1 features (current packet)
             'skewness': calc_skewness(amplitudes),
@@ -307,7 +372,7 @@ class PublishTimeFeatureExtractor:
             
             # Turbulence buffer features
             'variance_turb': moving_variance,  # Already calculated by MVS!
-            'iqr_turb': calc_iqr_turb(turbulence_buffer, buffer_count),
+            'iqr_turb': calc_iqr_turb_real(turbulence_buffer, buffer_count), # more granular
             'entropy_turb': calc_entropy_turb(turbulence_buffer, buffer_count),
             
             # Spatial classification features
@@ -319,6 +384,13 @@ class PublishTimeFeatureExtractor:
             'amp_mean_low': subband_features['amp_mean_low'],
             'amp_mean_mid': subband_features['amp_mean_mid'],
             'amp_mean_high': subband_features['amp_mean_high'],
+            'sc_amps': calc_all_subcarrier_amps(amplitudes, self._sc_buf),  # all 64 subcarriers,        
+                        
+            # Phase features from raw I/Q
+            'phase_mean':  phase_features['phase_mean'],
+            'phase_std':   phase_features['phase_std'],
+            'phase_range': phase_features['phase_range'],
+
         }
         
         return self.last_features

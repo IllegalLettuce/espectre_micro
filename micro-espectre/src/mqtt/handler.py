@@ -147,6 +147,11 @@ class MQTTHandler:
                 'amp_mean_low': round(features.get('amp_mean_low', 0), 3),
                 'amp_mean_mid': round(features.get('amp_mean_mid', 0), 3),
                 'amp_mean_high': round(features.get('amp_mean_high', 0), 3),
+                'sc_amps': features.get('sc_amps', []),
+                # Phase features from raw I/Q
+                'phase_mean':  round(features.get('phase_mean', 0), 4),
+                'phase_std':   round(features.get('phase_std', 0), 4),
+                'phase_range': round(features.get('phase_range', 0), 4),
             }
             
             # Add confidence score if available
@@ -158,7 +163,7 @@ class MQTTHandler:
                 payload['triggered'] = triggered
         
         try:
-            self.client.publish(self.base_topic, json.dumps(payload))
+            self.client.publish(self.base_topic, json.dumps(payload), retain=False)
         except Exception as e:
             print(f"Error publishing to MQTT: {e}")
         

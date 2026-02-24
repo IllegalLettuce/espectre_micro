@@ -70,24 +70,25 @@ def cleanup_wifi(wlan):
 def print_wifi_status(wlan):
     """Print WiFi connection status with configuration details."""
     ip = wlan.ifconfig()[0]
-    
+   
+   
     # Protocol decode (HT20 only: 802.11b/g/n)
     PROTOCOL_NAMES = {
         network.MODE_11B: 'b',
-        network.MODE_11G: 'g', 
+        network.MODE_11G: 'g',
         network.MODE_11N: 'n',
     }
-    
+   
     proto_val = wlan.config('protocol')
     modes = [name for bit, name in PROTOCOL_NAMES.items() if proto_val & bit]
     protocol_str = '802.11' + '/'.join(modes) if modes else f'0x{proto_val:02x}'
-    
+   
     # Bandwidth decode (HT20 only)
     bw_str = 'HT20' if wlan.config('bandwidth') == wlan.BW_HT20 else 'unknown'
-    
+   
     # Promiscuous
     prom_str = 'ON' if wlan.config('promiscuous') else 'OFF'
-    
+
     print(f"WiFi connected - IP: {ip}, Protocol: {protocol_str}, Bandwidth: {bw_str}, Promiscuous: {prom_str}")
 
 def connect_wifi():
@@ -119,7 +120,7 @@ def connect_wifi():
     
     # Connect
     print(f"Connecting to WiFi...")
-    wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
+    wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD, bssid=config.FORCED_BSSID)
     
     # Wait for connection
     timeout = 30
@@ -556,8 +557,10 @@ def main():
     last_publish_time = time.ticks_ms()
     
     # Calculate optimal sleep based on traffic rate
-    publish_rate = traffic_gen.get_rate() if traffic_gen.is_running() else 100
-    publish_rate = 50
+    #publish_rate = traffic_gen.get_rate() if traffic_gen.is_running() else 100
+    publish_rate = 1
+    loop_counter = 0
+    last_ts = time.ticks_ms()
     try:
         while True:
             loop_start = time.ticks_us()
@@ -618,16 +621,16 @@ def main():
                     threshold = metrics['threshold']
                     progress = motion_metric / threshold if threshold > 0 else 0
                     progress_bar = format_progress_bar(progress, threshold)
-                    print(f"{progress_bar} | pkts:{publish_counter} drop:{dropped_delta} pps:{pps} | "
-                          f"mvmt:{motion_metric:.4f} thr:{threshold:.4f} | {state_str}")
-                    
+                    # print(f"{progress_bar} | pkts:{publish_counter} drop:{dropped_delta} pps:{pps} | "
+                    #       f"mvmt:{motion_metric:.4f} thr:{threshold:.4f} | {state_str}")
+                    print(f"pkts:{publish_counter} drop:{dropped_delta} pps:{pps} | ")
                     # Compute features at publish time (MVS only)
                     features = None
                     confidence = None
                     triggered = None
                     if detection_algorithm == 'mvs' and config.ENABLE_FEATURES:
                         if hasattr(detector, '_context') and detector._context.features_ready():
-                            features = detector._context.compute_features()
+                            features = detector._context.compute_features(csi_raw=csi_data)
                             confidence, triggered = detector._context.compute_confidence(features)
                     
                     mqtt_handler.publish_state(
@@ -653,7 +656,23 @@ def main():
                 g_state.loop_time_us = time.ticks_diff(time.ticks_us(), loop_start)
                 
                 time.sleep_us(100)
-    
+                
+            loop_counter += 1
+            if loop_counter % 100 == 0:
+                gc.collect()
+                free  = gc.mem_free()
+                alloc = gc.mem_alloc()
+                total = free + alloc
+                frag_ratio = alloc / total
+                print(f"STAT {free} {alloc} {frag_ratio:.3f}")
+                
+                # Fragmentation warning
+                if frag_ratio > 0.4:   # >40% allocated = fragmentation risk
+                    print("WARN: Heap fragmentation building up")
+                    gc.collect()
+                    gc.collect()   # double-collect helps compact on MicroPython
+
+                        
     except KeyboardInterrupt:
         print('\n\nStopping...')
     

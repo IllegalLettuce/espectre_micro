@@ -79,6 +79,8 @@ class SegmentationContext:
         # Last amplitudes (for W=1 features at publish time)
         self.last_amplitudes = None
         
+        self.last_csi_raw = None
+        
         # Initialize low-pass filter if enabled
         self.lowpass_filter = None
         if enable_lowpass:
@@ -234,6 +236,9 @@ class SegmentationContext:
         _, all_amplitudes = self.compute_spatial_turbulence(csi_data, selected_subcarriers=None)
         self.last_amplitudes = all_amplitudes  # Use all 64 subcarriers for features!
         
+        # Store raw I/Q bytes for phase extraction at publish time
+        self.last_csi_raw = csi_data
+        
         return turbulence
 
     
@@ -345,30 +350,40 @@ class SegmentationContext:
             'state': self.state
         }
     
-    def compute_features(self):
+    def compute_features(self, csi_raw=None):
         """
         Compute features at publish time.
-        
+
         Uses:
-        - last_amplitudes: Current packet amplitudes (W=1 features)
+        - last_amplitudes: All 64 subcarrier amplitudes
         - turbulence_buffer: For turbulence-based features
-        - current_moving_variance: Already calculated
-        
+        - current_moving_variance: Already calculated by MVS
+        - last_csi_raw: Raw I/Q bytes for phase extraction
+
+        Args:
+            csi_raw: Optional override for raw I/Q bytes. If None, uses
+                    last_csi_raw stored during packet processing.
+
         Returns:
-            dict: Features or None if not ready
+            dict: All features, or None if not ready
         """
         if self.feature_extractor is None:
             return None
-        
+
         if self.last_amplitudes is None or self.buffer_count < self.window_size:
             return None
-        
+
+        raw = csi_raw if csi_raw is not None else self.last_csi_raw
+
         return self.feature_extractor.compute_features(
             self.last_amplitudes,
             self.turbulence_buffer,
             self.buffer_count,
-            self.current_moving_variance
+            self.current_moving_variance,
+            csi_raw=raw,
+            selected_indices=None
         )
+
     
     def compute_confidence(self, features):
         """
@@ -412,6 +427,7 @@ class SegmentationContext:
             self.current_moving_variance = 0.0
             self.last_turbulence = 0.0
             self.last_amplitudes = None
+            self.last_csi_raw    = None
             
             # Reset filters
             if self.lowpass_filter is not None:
