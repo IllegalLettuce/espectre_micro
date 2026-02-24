@@ -70,26 +70,34 @@ def cleanup_wifi(wlan):
 def print_wifi_status(wlan):
     """Print WiFi connection status with configuration details."""
     ip = wlan.ifconfig()[0]
-   
-   
+    
     # Protocol decode (HT20 only: 802.11b/g/n)
     PROTOCOL_NAMES = {
         network.MODE_11B: 'b',
-        network.MODE_11G: 'g',
+        network.MODE_11G: 'g', 
         network.MODE_11N: 'n',
     }
-   
+    
     proto_val = wlan.config('protocol')
     modes = [name for bit, name in PROTOCOL_NAMES.items() if proto_val & bit]
     protocol_str = '802.11' + '/'.join(modes) if modes else f'0x{proto_val:02x}'
-   
+    
     # Bandwidth decode (HT20 only)
     bw_str = 'HT20' if wlan.config('bandwidth') == wlan.BW_HT20 else 'unknown'
-   
+    
     # Promiscuous
     prom_str = 'ON' if wlan.config('promiscuous') else 'OFF'
-
+    
     print(f"WiFi connected - IP: {ip}, Protocol: {protocol_str}, Bandwidth: {bw_str}, Promiscuous: {prom_str}")
+
+    try:
+        connected_ssid = wlan.config('essid')
+        matches = [n for n in wlan.scan() if n[0].decode('utf-8', 'ignore') == connected_ssid]
+        if matches:
+            bssid = max(matches, key=lambda n: n[3])[1]
+            print('Connected node MAC: ' + ':'.join(f'{b:02X}' for b in bssid))
+    except Exception:
+        pass
 
 def connect_wifi():
     """Connect to WiFi"""
