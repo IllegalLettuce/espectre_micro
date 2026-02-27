@@ -19,29 +19,28 @@ Classification runs continuously in Home Assistant at ~30 predictions per second
 ---
 
 ## System Architecture
-
-┌─────────────────────┐ MQTT ┌──────────────────────────────┐
-│ ESP32-S3/C6 │ ──────────────────► │ Home Assistant │
-│ │ │ │
-│ - Collects CSI │ JSON payload │ - AppDaemon CSI Classifier │
-│ - 64 subcarriers │ ~30 Hz │ - Random Forest inference │
-│ - HT20 / 802.11n │ │ - Sensor entity output │
-│ - MVS/PCA motion │ │ - Lovelace dashboard │
-│ detection │ │ - Automation triggers │
-└─────────────────────┘ └──────────────────────────────┘
-▲
-│ .pkl model deploy
-│
-┌────────────────────────┐
-│ Training (Laptop) │
-│ │
-│ - CSV data collection │
-│ - Windowed features │
-│ - Session-level split │
-│ - RF training script │
-└────────────────────────┘
-
-
+```
+┌─────────────────────┐         MQTT          ┌──────────────────────────────┐
+│     ESP32-S3/C6     │  ──────────────────►  │      Home Assistant          │
+│                     │                        │                              │
+│  -  Collects CSI     │   JSON payload         │  -  AppDaemon CSI Classifier  │
+│  -  64 subcarriers   │   ~30 Hz               │  -  Random Forest inference   │
+│  -  HT20 / 802.11n   │                        │  -  Sensor entity output      │
+│  -  MVS/PCA motion   │                        │  -  Lovelace dashboard        │
+│    detection        │                        │  -  Automation triggers       │
+└─────────────────────┘                        └──────────────────────────────┘
+                                                            ▲
+                                                            │  .pkl model deploy
+                                                            │
+                                               ┌────────────────────────┐
+                                               │   Training (Laptop)    │
+                                               │                        │
+                                               │  -  CSV data collection │
+                                               │  -  Windowed features   │
+                                               │  -  Session-level split │
+                                               │  -  RF training script  │
+                                               └────────────────────────┘
+```
 
 ### ESP32 Node
 The ESP32 operates in STA mode, connected to a fixed mesh node (BSSID-pinned to prevent mid-session roaming). It continuously generates UDP traffic to the AP to stimulate CSI feedback, collects raw CSI frames via the `csi_enable()` API, applies Moving Variance Segmentation (MVS) or PCA-based motion detection, and publishes aggregated feature vectors to an MQTT topic at approximately 30 Hz.
@@ -55,7 +54,7 @@ CSI data is recorded to CSV files on the laptop, organised by class and door sta
 ---
 
 ## Project Structure
-
+```
 /
 ├── espectre-home/ # AppDaemon app — MQTT subscriber, RF inference, HA sensor
 │ └── ...
@@ -71,18 +70,19 @@ CSI data is recorded to CSV files on the laptop, organised by class and door sta
 │
 └── Record Data/ # Data collection scripts and CSV output management
 └── ...
-
+```
 
 ---
 
 ## Training Data Convention
 
 CSV files are named using the following convention to encode the environmental condition at collection time:
-
+```
 csi_training_data_<class><d1><d2><d3><YYYYMMDD>_<HHMMSS>.csv
+```
 
 Where `<d1>_<d2>_<d3>` is a binary door state vector:
-
+```
 | State     | Meaning                          |
 |-----------|----------------------------------|
 | `0_0_0`   | All doors closed                 |
@@ -91,7 +91,7 @@ Where `<d1>_<d2>_<d3>` is a binary door state vector:
 | `0_0_1`   | Kitchen door open                |
 | `0_1_1`   | Study room + kitchen open        |
 | `1_1_1`   | All doors open                   |
-
+```
 Each door state requires a minimum of **3 sessions per class** to provide sufficient variance for the Random Forest to learn generalising splits. Data should always be collected with the ESP32 **pinned to a fixed BSSID** to prevent multipath environment shifts caused by mesh node roaming.
 
 ---
