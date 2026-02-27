@@ -158,20 +158,20 @@ CSI data is recorded to CSV files on the laptop, organised by class and door sta
 ## Project Structure
 ```
 /
-├── espectre-home/ # Orginal Espectre deployment - motion detection
-│ └── ...
+├── espectre-home/ 
+│ └── ... # Orginal Espectre deployment - motion detection
 │
-├── Home Assistant Scripts/ # HA configuration scripts
-│ └── ...
+├── Home Assistant Scripts/ 
+│ └── ... # HA configuration scripts
 │
-├── micro-espectre/ # MicroPython firmware for ESP32-S3/C6
-│ └── ...
+├── micro-espectre/ 
+│ └── ... # MicroPython firmware for ESP32-S3/C6
 │
-├── Testing/ # RF training script, model evaluation, feature analysis
-│ └── ...
+├── Testing/ 
+│ └── ... # RF training script, model evaluation, feature analysis
 │
-└── Record Data/ # Data collection scripts and CSV output management
-└── ...
+└── Record Data/ 
+└── ... # Data collection scripts and CSV output management
 ```
 
 ---
