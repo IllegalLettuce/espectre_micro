@@ -1,7 +1,7 @@
 {
   "format_version": "1.0",
   "created_at": "2026-01-10T18:23:57.538444",
-  "updated_at": "2026-01-17T22:26:26.763375",
+  "updated_at": "2026-01-30T08:29:15.117002",
   "labels": {
     "baseline": {
       "id": 0,
@@ -14,6 +14,21 @@
     "movement": {
       "id": 1,
       "description": "Human movement in room"
+    },
+    "dining_baseline": {
+      "id": 3,
+      "samples": 0,
+      "description": ""
+    },
+    "dining_walking_q1": {
+      "id": 4,
+      "samples": 0,
+      "description": ""
+    },
+    "dining_walking_q2": {
+      "id": 5,
+      "samples": 0,
+      "description": ""
     }
   },
   "files": {
@@ -70,6 +85,162 @@
         "collected_at": "2026-01-17T22:26:26.747046",
         "duration_ms": 10010,
         "num_packets": 1366,
+        "description": ""
+      }
+    ],
+    "dining_baseline": [
+      {
+        "filename": "dining_baseline_s3_64sc_20260130_080521.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:05:21.643147",
+        "duration_ms": 45058,
+        "num_packets": 4795,
+        "description": ""
+      },
+      {
+        "filename": "dining_baseline_s3_64sc_20260130_080751.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:07:51.025702",
+        "duration_ms": 45000,
+        "num_packets": 4803,
+        "description": ""
+      },
+      {
+        "filename": "dining_baseline_s3_64sc_20260130_080941.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:09:41.758568",
+        "duration_ms": 45000,
+        "num_packets": 4793,
+        "description": ""
+      },
+      {
+        "filename": "dining_baseline_s3_64sc_20260130_081219.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:12:19.447497",
+        "duration_ms": 44999,
+        "num_packets": 4805,
+        "description": ""
+      },
+      {
+        "filename": "dining_baseline_s3_64sc_20260130_081350.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:13:50.317861",
+        "duration_ms": 45007,
+        "num_packets": 4783,
+        "description": ""
+      }
+    ],
+    "dining_walking_q1": [
+      {
+        "filename": "dining_walking_q1_s3_64sc_20260130_081503.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:15:03.917209",
+        "duration_ms": 45010,
+        "num_packets": 4807,
+        "description": ""
+      },
+      {
+        "filename": "dining_walking_q1_s3_64sc_20260130_081609.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:16:09.593541",
+        "duration_ms": 13340,
+        "num_packets": 1645,
+        "description": ""
+      },
+      {
+        "filename": "dining_walking_q1_s3_64sc_20260130_081709.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:17:09.293956",
+        "duration_ms": 0,
+        "num_packets": 1,
+        "description": ""
+      },
+      {
+        "filename": "dining_walking_q1_s3_64sc_20260130_081828.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:18:28.378048",
+        "duration_ms": 0,
+        "num_packets": 1,
+        "description": ""
+      },
+      {
+        "filename": "dining_walking_q1_s3_64sc_20260130_081932.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:19:32.297197",
+        "duration_ms": 0,
+        "num_packets": 1,
+        "description": ""
+      }
+    ],
+    "dining_walking_q2": [
+      {
+        "filename": "dining_walking_q2_s3_64sc_20260130_082043.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:20:43.640549",
+        "duration_ms": 0,
+        "num_packets": 1,
+        "description": ""
+      },
+      {
+        "filename": "dining_walking_q2_s3_64sc_20260130_082505.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:25:05.473441",
+        "duration_ms": 45001,
+        "num_packets": 4810,
+        "description": ""
+      },
+      {
+        "filename": "dining_walking_q2_s3_64sc_20260130_082620.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:26:20.299772",
+        "duration_ms": 45013,
+        "num_packets": 4812,
+        "description": ""
+      },
+      {
+        "filename": "dining_walking_q2_s3_64sc_20260130_082804.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:28:04.304451",
+        "duration_ms": 45021,
+        "num_packets": 4815,
+        "description": ""
+      },
+      {
+        "filename": "dining_walking_q2_s3_64sc_20260130_082915.npz",
+        "chip": "S3",
+        "subcarriers": 64,
+        "contributor": "anthonysabbe",
+        "collected_at": "2026-01-30T08:29:15.014386",
+        "duration_ms": 45002,
+        "num_packets": 4804,
         "description": ""
       }
     ]

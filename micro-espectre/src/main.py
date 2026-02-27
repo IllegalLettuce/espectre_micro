@@ -110,7 +110,7 @@ def connect_wifi():
     # Force cleanup of any stale state from previous interrupted run
     cleanup_wifi(wlan)
     
-    wlan.active(True)    
+    wlan.active(True)
     if not wlan.active():
         raise Exception("WiFi failed to activate")
     
@@ -129,9 +129,10 @@ def connect_wifi():
     # Connect
     print(f"Connecting to WiFi...")
     wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD, bssid=config.FORCED_BSSID)
-    
+    # wlan.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
+
     # Wait for connection
-    timeout = 30
+    timeout = 50
     while not wlan.isconnected() and timeout > 0:
         time.sleep(1)
         timeout -= 1
