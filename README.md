@@ -2,7 +2,7 @@
 
 > Built on top of the original [ESPectre](https://github.com/EdoardoLuciani/espetre) project by Edoardo Luciani.
 
-A passive, infrastructure-free room-level occupancy and motion localisation system using WiFi Channel State Information (CSI) collected from a single ESP32 node. No cameras, no PIR sensors, no wearables — just the existing WiFi signal.
+A passive, infrastructure-free room-level occupancy and motion localisation system using WiFi Channel State Information (CSI) collected from a single ESP32 node. No cameras, no PIR sensors, no wearables — just the existing WiFi signal. No modifications of router needed either, this works on any commerical router.
 
 ---
 
@@ -22,44 +22,141 @@ Classification runs continuously in Home Assistant at ~30 predictions per second
 ```
 ┌─────────────────────┐         MQTT          ┌──────────────────────────────┐
 │     ESP32-S3/C6     │  ──────────────────►  │      Home Assistant          │
-│                     │                        │                              │
-│  -  Collects CSI     │   JSON payload         │  -  AppDaemon CSI Classifier  │
-│  -  64 subcarriers   │   ~30 Hz               │  -  Random Forest inference   │
-│  -  HT20 / 802.11n   │                        │  -  Sensor entity output      │
-│  -  MVS/PCA motion   │                        │  -  Lovelace dashboard        │
-│    detection        │                        │  -  Automation triggers       │
-└─────────────────────┘                        └──────────────────────────────┘
+│                     │                       │                              │
+│  -  Collects CSI    │   JSON payload        │  -  AppDaemon CSI Classifier │
+│  -  64 subcarriers  │   ~30 Hz              │  -  Random Forest inference  │
+│  -  HT20 / 802.11n  │                       │  -  Sensor entity output     │
+│  -  MVS/PCA motion  │                       │  -  Lovelace dashboard       │
+│    detection        │                       │  -  Automation triggers      │
+└─────────────────────┘                       └──────────────────────────────┘
                                                             ▲
                                                             │  .pkl model deploy
                                                             │
                                                ┌────────────────────────┐
                                                │   Training (Laptop)    │
                                                │                        │
-                                               │  -  CSV data collection │
-                                               │  -  Windowed features   │
-                                               │  -  Session-level split │
-                                               │  -  RF training script  │
+                                               │ -  CSV data collection │
+                                               │ -  Windowed features   │
+                                               │ -  Session-level split │
+                                               │ -  RF training script  │
                                                └────────────────────────┘
 ```
 
 ### ESP32 Node
-The ESP32 operates in STA mode, connected to a fixed mesh node (BSSID-pinned to prevent mid-session roaming). It continuously generates UDP traffic to the AP to stimulate CSI feedback, collects raw CSI frames via the `csi_enable()` API, applies Moving Variance Segmentation (MVS) or PCA-based motion detection, and publishes aggregated feature vectors to an MQTT topic at approximately 30 Hz.
+The ESP32 operates in STA mode, connected to a fixed mesh node (BSSID-pinned to prevent mid-session roaming between nodes). It continuously generates UDP traffic to the AP to stimulate CSI feedback, collects raw CSI frames via the `csi_enable()` API, applies Moving Variance Segmentation (MVS) or PCA-based motion detection, and publishes aggregated feature vectors to an MQTT topic at approximately 30 Hz.
 
+```
+
+12:37:34: home/espectre/node1
+{
+    "confidence": 0.0,
+    "features": {
+        "amp_mean": 20.537,
+        "amp_mean_high": 26.334,
+        "amp_mean_low": 20.459,
+        "amp_mean_mid": 14.542,
+        "amp_range": 30.806,
+        "amp_std": 8.39,
+        "entropy_turb": 2.751,
+        "iqr_turb": 0.84,
+        "kurtosis": 1.201,
+        "phase_mean": 0.0314,
+        "phase_range": 5.7188,
+        "phase_std": 1.4547,
+        "sc_amps": [
+            27.0,
+            24.08,
+            23.19,
+            22.36,
+            24.35,
+            22.14,
+            20.25,
+            19.7,
+            21.1,
+            17.8,
+            18.44,
+            18.38,
+            18.44,
+            20.25,
+            20.62,
+            17.46,
+            18.38,
+            19.24,
+            20.02,
+            18.0,
+            18.44,
+            16.28,
+            18.79,
+            16.12,
+            15.62,
+            14.87,
+            15.0,
+            18.03,
+            17.46,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            27.51,
+            28.65,
+            29.21,
+            29.83,
+            28.84,
+            29.15,
+            30.08,
+            30.81,
+            28.0,
+            29.07,
+            27.46,
+            28.23,
+            27.31,
+            29.07,
+            28.65,
+            25.81,
+            26.25,
+            24.08,
+            25.0,
+            24.41,
+            26.08,
+            25.94,
+            25.63,
+            22.47,
+            23.54,
+            24.74,
+            24.52,
+            22.2
+        ],
+        "skewness": -1.351,
+        "variance_turb": 0.42
+    },
+    "friendly_name": "ESP32 CSI Raw",
+    "movement": 0.4203,
+    "packets_dropped": 1,
+    "packets_processed": 1,
+    "pps": 34,
+    "threshold": 0.221,
+    "timestamp": 4543,
+    "triggered": []
+}
+```
 ### Home Assistant Classifier
-An AppDaemon app subscribes to the MQTT topic and feeds incoming feature vectors into the loaded Random Forest model. Each prediction is published back as a Home Assistant sensor entity (`sensor.csi_location`) with confidence scores for each class. The Lovelace dashboard visualises real-time predictions, confidence levels, and recent prediction history.
+An AppDaemon app subscribes to the MQTT topic and feeds incoming feature vectors into the loaded Random Forest model. Each prediction is published back as a Home Assistant sensor entity (`sensor.csi_location`) with confidence scores for each class. The Lovelace dashboard visualises real-time predictions, confidence levels, and recent prediction history using a 3d model of the room.
 
 ### Training Pipeline
-CSI data is recorded to CSV files on the laptop, organised by class and door state condition. A windowed feature extraction pipeline (window size 28 frames, stride 8) builds per-window feature vectors from 11 aggregate CSI statistics and 44 valid subcarrier amplitudes, yielding 148 features per window. The dataset is split at the **session level** (not window level) to prevent data leakage between train and test sets. The trained scaler and model are exported as `.pkl` files and deployed to Home Assistant.
+CSI data is recorded to CSV files on the laptop, organised by class and door state condition. A windowed feature extraction pipeline (window size 28 frames, stride 8) builds per-window feature vectors from 11 aggregate CSI statistics and 44 valid subcarrier amplitudes, yielding 148 features per window. The dataset is split at the **session level** (not window level) to prevent data leakage between train and test sets. The trained scaler and model are exported as `.pkl` files and deployed to Home Assistant manually.
 
 ---
 
 ## Project Structure
 ```
 /
-├── espectre-home/ # AppDaemon app — MQTT subscriber, RF inference, HA sensor
+├── espectre-home/ # Orginal Espectre deployment - motion detection
 │ └── ...
 │
-├── Home Assistant Scripts/ # HA configuration, Lovelace dashboard YAML, automations
+├── Home Assistant Scripts/ # HA configuration scripts
 │ └── ...
 │
 ├── micro-espectre/ # MicroPython firmware for ESP32-S3/C6
