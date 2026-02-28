@@ -121,7 +121,7 @@ def build_windowed_features(dataframe, aggregate_features, valid_sc_cols,
 
     return np.array(X_rows, dtype='float32'), np.array(y_rows)
 
-def load_data_from_directories(base_dir='csv_data'):
+def load_data_from_directories(base_dir='Testing/csv_data'):
     """
     Automatically scan directories and load all CSV files.
 
@@ -240,9 +240,9 @@ def load_data_from_directories(base_dir='csv_data'):
 
     # ------------------------------------------------------------------ #
     #  SESSION-LEVEL TRAIN/TEST SPLIT                                     #
-    #  Hold out the last file per class as the test session.              #
-    #  Windows are built independently for each split —                   #
-    #  no overlap between train and test windows.                         #
+    #  Hold out the LAST file per door state per class as test.           #
+    #  This ensures test coverage across all door states, not just        #
+    #  whichever door state sorts last alphabetically.                    #
     # ------------------------------------------------------------------ #
     unique_labels = sorted(combined_df['label'].unique())
     label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
@@ -254,25 +254,38 @@ def load_data_from_directories(base_dir='csv_data'):
     print(f"{'='*80}")
 
     for label_name, file_df_pairs in files_by_class.items():
-        n_files = len(file_df_pairs)
-        if n_files < 2:
-            print(f"⚠️  Warning: '{label_name}' has only {n_files} file(s) — "
-                  f"using it for training only, no test session held out.")
-            for _, df in file_df_pairs:
-                train_dfs.append(df)
-            continue
-
-        # Hold out last file (most recent session) as test
-        test_csv, test_df   = file_df_pairs[-1]
-        train_pairs          = file_df_pairs[:-1]
+        # Group files by door state extracted from filename
+        # e.g. csi_training_data_baseline_0_1_1_20260227_111914.csv → '0_1_1'
+        door_state_groups = {}
+        for csv_file, df in file_df_pairs:
+            parts = csv_file.stem.split('_')
+            # Door state is always the three tokens before the date (last 2 tokens)
+            # Format: csi_training_data_<class...>_D1_D2_D3_YYYYMMDD_HHMMSS
+            door_state = '_'.join(parts[-5:-2])   # e.g. '0_1_1'
+            if door_state not in door_state_groups:
+                door_state_groups[door_state] = []
+            door_state_groups[door_state].append((csv_file, df))
 
         print(f"\n  {label_name}:")
-        print(f"    Test  session : {test_csv.name} ({len(test_df)} samples)")
-        print(f"    Train sessions: {len(train_pairs)} file(s)")
 
-        test_dfs.append(test_df)
-        for _, df in train_pairs:
-            train_dfs.append(df)
+        for door_state, pairs in sorted(door_state_groups.items()):
+            if len(pairs) < 2:
+                print(f"    ⚠️  {door_state}: only {len(pairs)} session — used for training only")
+                for _, df in pairs:
+                    train_dfs.append(df)
+                continue
+
+            # Hold out last session for this door state as test
+            test_csv, test_df = pairs[-1]
+            train_pairs       = pairs[:-1]
+
+            print(f"    {door_state} → test: {test_csv.name} ({len(test_df)} samples), "
+                  f"train: {len(train_pairs)} session(s)")
+
+            test_dfs.append(test_df)
+            for _, df in train_pairs:
+                train_dfs.append(df)
+
 
     train_df = pd.concat(train_dfs, ignore_index=True)
     test_df  = pd.concat(test_dfs,  ignore_index=True)
@@ -344,11 +357,6 @@ def train_random_forest(X_train, X_test, y_train, y_test, feature_names, label_m
         class_weight='balanced'
     )
 
-    #                      Predicted:
-    # Actual:                    Baseline     Quadrant_1     Quadrant_2
-    #   Baseline                      502              4              5
-    #   Quadrant_1                      5            225             31
-    #   Quadrant_2                      7             21            228
     print(f"\n{'='*80}")
     print("TRAINING RANDOM FOREST")
     print(f"{'='*80}")
