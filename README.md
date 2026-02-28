@@ -145,6 +145,11 @@ The ESP32 operates in STA mode, connected to a fixed mesh node (BSSID-pinned to 
 ### Home Assistant Classifier
 An AppDaemon app subscribes to the MQTT topic and feeds incoming feature vectors into the loaded Random Forest model. Each prediction is published back as a Home Assistant sensor entity (`sensor.csi_location`) with confidence scores for each class. The Lovelace dashboard visualises real-time predictions, confidence levels, and recent prediction history using a 3d model of the room.
 
+| Baseline | Quadrant 1 (Hallway) | Quadrant 2 (Stairs) |
+|:---:|:---:|:---:|
+| <img src="docs/base.png" width="250"/> | <img src="docs/sensor.quadrant1.png" width="250"/> | <img src="docs/sensor.quadrant2.png" width="250"/> |
+| No movement detected | Movement in hallway | Movement on stairs |
+
 ### Training Pipeline
 CSI data is recorded to CSV files on the laptop, organised by class and door state condition. A windowed feature extraction pipeline (window size 28 frames, stride 8) builds per-window feature vectors from 11 aggregate CSI statistics and 44 valid subcarrier amplitudes, yielding 148 features per window. The dataset is split at the **session level** (not window level) to prevent data leakage between train and test sets. The trained scaler and model are exported as `.pkl` files and deployed to Home Assistant manually.
 
@@ -153,20 +158,20 @@ CSI data is recorded to CSV files on the laptop, organised by class and door sta
 ## Project Structure
 ```
 /
-├── espectre-home/ # Orginal Espectre deployment - motion detection
-│ └── ...
+├── espectre-home/ 
+│ └── ... # Orginal Espectre deployment - motion detection
 │
-├── Home Assistant Scripts/ # HA configuration scripts
-│ └── ...
+├── Home Assistant Scripts/ 
+│ └── ... # HA configuration scripts
 │
-├── micro-espectre/ # MicroPython firmware for ESP32-S3/C6
-│ └── ...
+├── micro-espectre/ 
+│ └── ... # MicroPython firmware for ESP32-S3/C6
 │
-├── Testing/ # RF training script, model evaluation, feature analysis
-│ └── ...
+├── Testing/ 
+│ └── ... # RF training script, model evaluation, feature analysis
 │
-└── Record Data/ # Data collection scripts and CSV output management
-└── ...
+└── Record Data/ 
+└── ... # Data collection scripts and CSV output management
 ```
 
 ---
