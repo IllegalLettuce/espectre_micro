@@ -46,9 +46,11 @@ csv_writer.writerow([
     'phase_mean', 'phase_std', 'phase_range',
     'ground_truth', 'predicted', 'correct',
     'conf_baseline', 'conf_quadrant1', 'conf_quadrant2', 'confidence',
-    # Measurement columns
     'inference_ms',
+    'mqtt_transport_ms',   # ESP32 publish → laptop receipt
     'payload_bytes',
+    'esp32_pps',
+    'packets_dropped',
 ])
 print(f"✓ CSV: {csv_filename}\n")
 
@@ -102,9 +104,15 @@ collection_start  = None
 
 results      = []
 pred_counts  = {c: 0 for c in CLASS_NAMES}
-latency_log  = []   # inference_ms per prediction
-traffic_log  = []   # payload_bytes per message
-msg_times    = []   # arrival time of every message (for Hz calculation)
+latency_log  = []        # inference_ms
+transport_log = []       # mqtt_transport_ms
+traffic_log  = []        # payload bytes
+msg_times    = []        # wall-clock arrival time of every message
+pps_log      = []
+dropped_log  = []
+
+# Clock offset — computed once from first message
+clock_offset_ms = None   # wall_clock_ms - esp32_boot_ms
 
 
 # ── Timers ────────────────────────────────────────────────────────────────────
@@ -127,38 +135,55 @@ def stop_collection():
     correct  = sum(1 for _, _, ok, *_ in results if ok)
     accuracy = correct / total * 100 if total > 0 else 0
 
-    # ── Traffic summary ──────────────────────────────────────────────────
+    # ── Traffic ───────────────────────────────────────────────────────────
     if traffic_log and msg_times:
-        avg_bytes   = np.mean(traffic_log)
-        total_bytes = sum(traffic_log)
-        duration    = msg_times[-1] - msg_times[0] if len(msg_times) > 1 else COLLECTION_SECONDS
-        actual_hz   = len(msg_times) / duration
-        kbps        = (avg_bytes * actual_hz) / 1024
+        avg_bytes  = np.mean(traffic_log)
+        duration   = msg_times[-1] - msg_times[0] if len(msg_times) > 1 else COLLECTION_SECONDS
+        actual_hz  = len(msg_times) / duration
+        kbps       = (avg_bytes * actual_hz) / 1024
 
         print(f"\n{'='*65}")
-        print(f"  TRAFFIC MEASUREMENT (NFR5 — must be < 25 KB/s)")
+        print(f"  TRAFFIC MEASUREMENT  (NFR5 — must be < 25 KB/s)")
         print(f"{'='*65}")
         print(f"  Messages received  : {len(traffic_log)}")
         print(f"  Avg payload size   : {avg_bytes:.0f} bytes")
         print(f"  Min / Max payload  : {min(traffic_log)} / {max(traffic_log)} bytes")
         print(f"  Actual message rate: {actual_hz:.1f} Hz")
         print(f"  Estimated traffic  : {kbps:.2f} KB/s")
-        print(f"  NFR5 {'✓ PASS' if kbps < 25 else '✗ FAIL'} (threshold: 25 KB/s)")
+        if pps_log:
+            print(f"  ESP32 avg pps      : {np.mean(pps_log):.1f}")
+        if dropped_log:
+            print(f"  Avg packets dropped: {np.mean(dropped_log):.2f}")
+        print(f"  NFR5 {'✓ PASS' if kbps < 25 else '✗ FAIL'}  (threshold: 25 KB/s)")
 
-    # ── Latency summary ──────────────────────────────────────────────────
+    # ── MQTT transport latency ────────────────────────────────────────────
+    if transport_log:
+        print(f"\n{'='*65}")
+        print(f"  MQTT TRANSPORT LATENCY  (ESP32 publish → laptop receipt)")
+        print(f"{'='*65}")
+        print(f"  Samples            : {len(transport_log)}")
+        print(f"  Avg transport      : {np.mean(transport_log):.2f} ms")
+        print(f"  Min / Max          : {np.min(transport_log):.2f} / {np.max(transport_log):.2f} ms")
+        print(f"  p95                : {np.percentile(transport_log, 95):.2f} ms")
+        print(f"  Note: clock offset established from first message — "
+              f"valid as long as ESP32 did not reboot during test")
+
+    # ── Inference latency ─────────────────────────────────────────────────
     if latency_log:
         print(f"\n{'='*65}")
-        print(f"  INFERENCE LATENCY (FR2/NFR2 — end-to-end must be < 1000ms)")
+        print(f"  INFERENCE LATENCY  (FR2/NFR2 — must be < 1000ms total)")
         print(f"{'='*65}")
         print(f"  Predictions made   : {len(latency_log)}")
-        print(f"  Avg inference time : {np.mean(latency_log):.2f} ms")
-        print(f"  Max inference time : {np.max(latency_log):.2f} ms")
-        print(f"  Min inference time : {np.min(latency_log):.2f} ms")
-        print(f"  p95 inference time : {np.percentile(latency_log, 95):.2f} ms")
-        print(f"  Note: Add MQTT broker RTT (~1-5ms LAN) for full end-to-end figure")
-        print(f"  FR2/NFR2 {'✓ PASS' if np.max(latency_log) < 1000 else '✗ FAIL'} (threshold: 1000ms)")
+        print(f"  Avg inference      : {np.mean(latency_log):.2f} ms")
+        print(f"  Max inference      : {np.max(latency_log):.2f} ms")
+        print(f"  p95 inference      : {np.percentile(latency_log, 95):.2f} ms")
 
-    # ── Classification summary ───────────────────────────────────────────
+        if transport_log:
+            combined = np.mean(transport_log) + np.mean(latency_log)
+            print(f"\n  Combined (transport + inference): {combined:.2f} ms")
+            print(f"  FR2/NFR2 {'✓ PASS' if combined < 1000 else '✗ FAIL'}  (threshold: 1000ms)")
+
+    # ── Classification ────────────────────────────────────────────────────
     print(f"\n{'='*65}")
     print(f"  CLASSIFICATION RESULTS")
     print(f"{'='*65}")
@@ -199,7 +224,9 @@ def on_connect(client, userdata, flags, rc):
 
 
 def on_message(client, userdata, msg):
-    # Always log traffic — even during warmup
+    global clock_offset_ms
+
+    recv_wall_ms  = time.time() * 1000
     payload_bytes = len(msg.payload)
     traffic_log.append(payload_bytes)
     msg_times.append(time.time())
@@ -211,6 +238,24 @@ def on_message(client, userdata, msg):
 
     if 'features' not in payload:
         return
+
+    # ── Clock offset — established once from first message ────────────────
+    esp32_ts_ms     = payload.get('timestamp', None)   # ms since ESP32 boot
+    mqtt_transport  = None
+
+    if esp32_ts_ms is not None:
+        if clock_offset_ms is None:
+            clock_offset_ms = recv_wall_ms - esp32_ts_ms
+            print(f"Clock offset established: {clock_offset_ms:.0f} ms "
+                  f"(ESP32 has been running {esp32_ts_ms/1000:.1f}s)")
+
+        esp32_wall_ms  = esp32_ts_ms + clock_offset_ms
+        mqtt_transport = recv_wall_ms - esp32_wall_ms
+        transport_log.append(mqtt_transport)
+
+    # Log pps and dropped packets
+    pps_log.append(payload.get('pps', 0))
+    dropped_log.append(payload.get('packets_dropped', 0))
 
     if not warmup_complete:
         return
@@ -264,7 +309,10 @@ def on_message(client, userdata, msg):
         round(prob_map.get('Quadrant_2', 0), 4),
         round(conf, 4),
         round(inference_ms, 3),
+        round(mqtt_transport, 3) if mqtt_transport is not None else '',
         payload_bytes,
+        payload.get('pps', ''),
+        payload.get('packets_dropped', ''),
     ])
     csv_file.flush()
 
@@ -276,12 +324,13 @@ def on_message(client, userdata, msg):
     RESET   = '\033[0m'
     colour  = COLOURS.get(pred, '')
     tick    = '✓' if correct else '✗'
+    t_str   = f"{mqtt_transport:.1f}ms" if mqtt_transport is not None else "n/a"
 
     print(
         f"  {tick} {colour}{pred:12s}{RESET} conf={conf:.2f} | "
         f"B={proba[0]:.2f} Q1={proba[1]:.2f} Q2={proba[2]:.2f} | "
         f"{remaining:.0f}s left | acc={running_acc:.1f}% | "
-        f"{inference_ms:.1f}ms | {payload_bytes}B"
+        f"infer={inference_ms:.1f}ms | transport={t_str} | {payload_bytes}B"
     )
 
 
