@@ -168,6 +168,8 @@ CSI data is recorded to CSV files on the laptop, organised by class and door sta
 │ └── ... # MicroPython firmware for ESP32-S3/C6
 │
 ├── Testing/ 
+│ └── ... # Scripts to evaluate real world performance
+├── Training/ 
 │ └── ... # RF training script, model evaluation, feature analysis
 │
 └── Record Data/ 
@@ -233,7 +235,7 @@ The current model achieves **97.91% test accuracy** on a fully held-out recordin
 3. Deploy `micro-espectre/` to the ESP32
 4. Copy the AppDaemon app from `espectre-home/` to your HA `apps/` directory
 5. Collect training data using the scripts in `Record Data/`
-6. Train the model using `Testing/test4.py` — outputs `rf_spatial_classifier.pkl` and `rf_scaler.pkl`
+6. Train the model using `Training/test4.py` — outputs `rf_spatial_classifier.pkl` and `rf_scaler.pkl`
 7. Deploy the `.pkl` files to the AppDaemon app directory
 8. Restart AppDaemon — the `sensor.csi_location` entity will appear in HA
 
