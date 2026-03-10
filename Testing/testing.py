@@ -34,7 +34,7 @@ if GROUND_TRUTH not in CLASS_NAMES:
 
 
 # ── CSV ───────────────────────────────────────────────────────────────────────
-NUM_SC_AMPS = 64
+NUM_SC_AMPS = 44
 SC_AMP_COLS = [f'sc_amp_{i}' for i in range(NUM_SC_AMPS)]
 
 csv_filename = f'csi_eval_{GROUND_TRUTH}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
@@ -62,8 +62,7 @@ print(f"✓ CSV: {csv_filename}\n")
 
 # ── Feature extraction ────────────────────────────────────────────────────────
 SEQ_LEN  = 28
-NULL_SC  = {0,1,2,3,4,5,27,28,29,30,31,32,33,34,35,59,60,61,62,63}
-VALID_SC = [i for i in range(64) if i not in NULL_SC]
+VALID_SC = list(range(44))
 
 AGG_FEATURES = [
     'entropy_turb', 'iqr_turb', 'variance_turb',

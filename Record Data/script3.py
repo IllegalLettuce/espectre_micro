@@ -23,7 +23,7 @@ CURRENT_LABEL = "movement_stairs_1_0_1"
 WARMUP_SECONDS = 3       # Wait time before starting collection
 COLLECTION_SECONDS = 45  # How long to collect data
 
-NUM_SC_AMPS = 64
+NUM_SC_AMPS = 44
 SC_AMP_COLS = [f'sc_amp_{i}' for i in range(NUM_SC_AMPS)]
 
 csv_file = open(

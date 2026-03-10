@@ -317,10 +317,15 @@ def calc_iqr_turb_real(turbulence_buffer, buffer_count):
     return q3 - q1
 
 def calc_all_subcarrier_amps(amplitudes, buf):
-    """Write all amplitudes into pre-allocated buffer."""
-    for i in range(min(len(amplitudes), len(buf))):
-        buf[i] = round(amplitudes[i], 2)  # 2dp saves ~30 bytes vs 3dp
-    return buf
+    """
+    Write all filtered amplitudes into pre-allocated buffer.
+    """
+    NULL_SC_INDICES = frozenset([0,1,2,3,4,5,27,28,29,30,31,32,33,34,35,59,60,61,62,63])
+    VALID_SC_INDICES = [i for i in range(64) if i not in NULL_SC_INDICES]
+    for out_idx, sc_idx in enumerate(VALID_SC_INDICES):
+        if sc_idx < len(amplitudes):
+            buf[out_idx] = round(amplitudes[sc_idx], 2)
+    return buf[:44]
 
 # ============================================================================
 # Feature Extractor (Publish-Time)

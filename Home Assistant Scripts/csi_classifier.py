@@ -3,7 +3,7 @@ import json, os, traceback
 import numpy as np
 from collections import deque
 
-VALID_SC_INDICES = list(range(6, 27)) + list(range(36, 59))  # 44 subcarrier
+VALID_SC_INDICES = list(range(44)) 
 
 AGG_FEATURES = [
     "entropy_turb", "iqr_turb", "variance_turb",
