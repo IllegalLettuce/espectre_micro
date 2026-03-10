@@ -229,7 +229,7 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     global clock_offset_ms
 
-    recv_wall_ms  = time.time() * 1000
+    recv_wall_ms  = time.time() * 1000   # keep for traffic stats
     payload_bytes = len(msg.payload)
     traffic_log.append(payload_bytes)
     msg_times.append(time.time())
@@ -242,24 +242,9 @@ def on_message(client, userdata, msg):
     if 'features' not in payload:
         return
 
-    # ── Clock offset ──────────────────────────────────────────────────────
-    esp32_ts_ms    = payload.get('timestamp', None)
-    mqtt_transport = None
-
-    if esp32_ts_ms is not None:
-        if clock_offset_ms is None:
-            clock_offset_ms = recv_wall_ms - esp32_ts_ms
-            print(f"✓ Clock offset established. ESP32 uptime: {esp32_ts_ms/1000:.1f}s")
-
-        esp32_wall_ms  = esp32_ts_ms + clock_offset_ms
-        mqtt_transport = recv_wall_ms - esp32_wall_ms
-
-        if mqtt_transport < 0 or mqtt_transport > 5000:
-            print(f"⚠️  Suspicious transport latency ({mqtt_transport:.0f}ms) — resetting offset.")
-            clock_offset_ms = recv_wall_ms - esp32_ts_ms
-            mqtt_transport  = None
-        else:
-            transport_log.append(mqtt_transport)
+    # ── Remove clock offset block entirely ───────────────────────────────
+    # ESP32 timestamp is ticks_ms() since boot — cross-device clock math
+    # is unreliable. Pipeline latency (recv→prediction) is measured instead.
 
     pps_log.append(payload.get('pps', 0))
     dropped_log.append(payload.get('packets_dropped', 0))
@@ -287,7 +272,7 @@ def on_message(client, userdata, msg):
     features        = extract_window_features(list(agg_buffer), list(sc_buffer))
     features_scaled = scaler.transform(features.reshape(1, -1))
     proba           = model.predict_proba(features_scaled)[0]
-    inference_ms    = (time.time() - t0) * 1000
+    pipeline_ms     = (time.time() - t0) * 1000   # inference only (buffer fill is structural)
 
     pred_idx = int(np.argmax(proba))
     pred     = LABEL_MAP[pred_idx]
@@ -295,7 +280,7 @@ def on_message(client, userdata, msg):
     correct  = pred == GROUND_TRUTH
 
     prob_map = {LABEL_MAP[i]: float(proba[i]) for i in range(len(proba))}
-    latency_log.append(inference_ms)
+    latency_log.append(pipeline_ms)
     results.append((pred, conf, correct, proba))
     pred_counts[pred] += 1
 
@@ -315,8 +300,8 @@ def on_message(client, userdata, msg):
         round(prob_map.get('Quadrant_1', 0), 4),
         round(prob_map.get('Quadrant_2', 0), 4),
         round(conf, 4),
-        round(inference_ms, 3),
-        round(mqtt_transport, 3) if mqtt_transport is not None else '',
+        round(pipeline_ms, 3),
+        '',                              # transport_ms removed — clock skew unreliable
         payload_bytes,
         payload.get('pps', ''),
         payload.get('packets_dropped', ''),
@@ -331,15 +316,15 @@ def on_message(client, userdata, msg):
     RESET   = '\033[0m'
     colour  = COLOURS.get(pred, '')
     tick    = '✓' if correct else '✗'
-    t_str   = f"{mqtt_transport:.1f}ms" if mqtt_transport is not None else "n/a"
 
     print(
         f"  {tick} {colour}{pred:12s}{RESET} conf={conf:.2f} | "
         f"B={prob_map['Baseline']:.2f} Q1={prob_map['Quadrant_1']:.2f} "
         f"Q2={prob_map['Quadrant_2']:.2f} | "
         f"{remaining:.0f}s left | acc={running_acc:.1f}% | "
-        f"infer={inference_ms:.1f}ms | transport={t_str} | {payload_bytes}B"
+        f"infer={pipeline_ms:.1f}ms | {payload_bytes}B"   # transport removed from display
     )
+
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
