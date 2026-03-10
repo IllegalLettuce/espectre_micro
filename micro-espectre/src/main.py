@@ -568,8 +568,8 @@ def main():
     # Calculate optimal sleep based on traffic rate
     #publish_rate = traffic_gen.get_rate() if traffic_gen.is_running() else 100
     publish_rate = 1
+    MIN_PUBLISH_INTERVAL_MS = 40
     loop_counter = 0
-    last_ts = time.ticks_ms()
     try:
         while True:
             loop_start = time.ticks_us()
@@ -606,6 +606,11 @@ def main():
                 
                 # Publish every N packets (where N = publish_rate)
                 if publish_counter >= publish_rate:
+                    current_time = time.ticks_ms()
+                    time_delta = time.ticks_diff(current_time, last_publish_time)
+                    # skip publish, keep accumulating, try and lock to 28hz
+                    if time_delta < MIN_PUBLISH_INTERVAL_MS:   
+                        continue                              
                     # Detect WiFi channel changes (AP may switch channels automatically)
                     # Channel changes cause CSI spikes that trigger false motion detection
                     if g_state.current_channel != 0 and packet_channel != g_state.current_channel:
@@ -615,8 +620,6 @@ def main():
                     
                     # Update state (lazy evaluation)
                     metrics = detector.update_state()
-                    current_time = time.ticks_ms()
-                    time_delta = time.ticks_diff(current_time, last_publish_time)
                     
                     # Calculate packets per second
                     pps = int((publish_counter * 1000) / time_delta) if time_delta > 0 else 0
