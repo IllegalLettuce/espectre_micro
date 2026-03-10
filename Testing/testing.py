@@ -21,11 +21,16 @@ SCALER_PATH = 'rf_scaler.pkl'
 # ── Model ─────────────────────────────────────────────────────────────────────
 model       = joblib.load(MODEL_PATH)
 scaler      = joblib.load(SCALER_PATH)
-CLASS_NAMES = list(model.classes_)
+LABEL_MAP   = {0: 'Baseline', 1: 'Quadrant_1', 2: 'Quadrant_2'}
+CLASS_NAMES = ['Baseline', 'Quadrant_1', 'Quadrant_2']
 
 print(f"✓ Model loaded:  {MODEL_PATH}")
 print(f"✓ Classes: {CLASS_NAMES}")
-print(f"✓ Ground truth: '{GROUND_TRUTH}'\n")
+print(f"✓ Ground truth: '{GROUND_TRUTH}'")
+print(f"✓ Model classes (raw): {model.classes_}")
+if GROUND_TRUTH not in CLASS_NAMES:
+    raise ValueError(f"GROUND_TRUTH '{GROUND_TRUTH}' not in {CLASS_NAMES}")
+
 
 
 # ── CSV ───────────────────────────────────────────────────────────────────────
@@ -222,7 +227,6 @@ def on_connect(client, userdata, flags, rc):
         print(f"✓ Subscribed — warmup {WARMUP_SECONDS}s...")
         threading.Timer(WARMUP_SECONDS, start_collection).start()
 
-
 def on_message(client, userdata, msg):
     global clock_offset_ms
 
@@ -239,21 +243,25 @@ def on_message(client, userdata, msg):
     if 'features' not in payload:
         return
 
-    # ── Clock offset — established once from first message ────────────────
-    esp32_ts_ms     = payload.get('timestamp', None)   # ms since ESP32 boot
-    mqtt_transport  = None
+    # ── Clock offset ──────────────────────────────────────────────────────
+    esp32_ts_ms    = payload.get('timestamp', None)
+    mqtt_transport = None
 
     if esp32_ts_ms is not None:
         if clock_offset_ms is None:
             clock_offset_ms = recv_wall_ms - esp32_ts_ms
-            print(f"Clock offset established: {clock_offset_ms:.0f} ms "
-                  f"(ESP32 has been running {esp32_ts_ms/1000:.1f}s)")
+            print(f"✓ Clock offset established. ESP32 uptime: {esp32_ts_ms/1000:.1f}s")
 
         esp32_wall_ms  = esp32_ts_ms + clock_offset_ms
         mqtt_transport = recv_wall_ms - esp32_wall_ms
-        transport_log.append(mqtt_transport)
 
-    # Log pps and dropped packets
+        if mqtt_transport < 0 or mqtt_transport > 5000:
+            print(f"⚠️  Suspicious transport latency ({mqtt_transport:.0f}ms) — resetting offset.")
+            clock_offset_ms = recv_wall_ms - esp32_ts_ms
+            mqtt_transport  = None
+        else:
+            transport_log.append(mqtt_transport)
+
     pps_log.append(payload.get('pps', 0))
     dropped_log.append(payload.get('packets_dropped', 0))
 
@@ -275,7 +283,7 @@ def on_message(client, userdata, msg):
         print(f"\r  Buffering {len(agg_buffer)}/{SEQ_LEN} | {elapsed:.1f}s", end='', flush=True)
         return
 
-    # ── Timed inference ───────────────────────────────────────────────────
+    # ── Inference ─────────────────────────────────────────────────────────
     t0              = time.time()
     features        = extract_window_features(list(agg_buffer), list(sc_buffer))
     features_scaled = scaler.transform(features.reshape(1, -1))
@@ -283,11 +291,11 @@ def on_message(client, userdata, msg):
     inference_ms    = (time.time() - t0) * 1000
 
     pred_idx = int(np.argmax(proba))
-    pred     = CLASS_NAMES[pred_idx]
-    conf     = proba[pred_idx]
+    pred     = LABEL_MAP[pred_idx]
+    conf     = float(proba[pred_idx])
     correct  = pred == GROUND_TRUTH
 
-    prob_map = dict(zip(CLASS_NAMES, proba))
+    prob_map = {LABEL_MAP[i]: float(proba[i]) for i in range(len(proba))}
     latency_log.append(inference_ms)
     results.append((pred, conf, correct, proba))
     pred_counts[pred] += 1
@@ -328,14 +336,15 @@ def on_message(client, userdata, msg):
 
     print(
         f"  {tick} {colour}{pred:12s}{RESET} conf={conf:.2f} | "
-        f"B={proba[0]:.2f} Q1={proba[1]:.2f} Q2={proba[2]:.2f} | "
+        f"B={prob_map['Baseline']:.2f} Q1={prob_map['Quadrant_1']:.2f} "
+        f"Q2={prob_map['Quadrant_2']:.2f} | "
         f"{remaining:.0f}s left | acc={running_acc:.1f}% | "
         f"infer={inference_ms:.1f}ms | transport={t_str} | {payload_bytes}B"
     )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
-client = mqtt.Client()
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
 client.username_pw_set("mqtt_device", "cheese")
 client.on_connect = on_connect
 client.on_message = on_message
