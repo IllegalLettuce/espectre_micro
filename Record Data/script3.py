@@ -6,19 +6,22 @@ import time
 import threading
 
 # door states (2^3)
-# 0_0_0 => all doors closed /
-# 1_0_0 => door to living room open /
-# 0_1_0 => door to study room open /
-# 0_0_1 => door to kitchen open /
-# 0_1_1 => door to study room and kitchen open /
-# 1_1_0 => door to living room and study room open /
-# 1_0_1 => door to living room and kitchen open
-# 1_1_1 => all doors open /
+DOOR_STATE = "0_0_0" #=> all doors closed 
+# DOOR_STATE = "1_0_0" #=> door to living room open 
+# DOOR_STATE = "0_1_0" #=> door to study room open 
+# DOOR_STATE = "0_0_1" #=> door to kitchen open 
+# DOOR_STATE = "0_1_1" #=> door to study room and kitchen open 
+# DOOR_STATE = "1_1_0" #=> door to living room and study room open 
+# DOOR_STATE = "1_0_1" #=> door to living room and kitchen open
+# DOOR_STATE = "1_1_1" #=> all doors open 
 
 # change when switching what to record
-# CURRENT_LABEL = "baseline_1_0_1" 
-CURRENT_LABEL = "movement_stairs_1_0_1"
-# CURRENT_LABEL = "movement_hallway_1_0_1"
+AREA = "baseline"
+# AREA = "movement_stairs"
+# AREA = "movement_hallway"
+
+CURRENT_LABEL = f"{AREA}_{DOOR_STATE}"
+
 
 WARMUP_SECONDS = 3       # Wait time before starting collection
 COLLECTION_SECONDS = 45  # How long to collect data
