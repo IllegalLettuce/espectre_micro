@@ -115,7 +115,7 @@ def build_windowed_features(dataframe, aggregate_features, valid_sc_cols,
             feats.append(float(np.mean(vt[half:]) - np.mean(vt[:half])))
             # → 1
 
-            # Total: 55 + 88 + 4 + 1 = 148
+            # Total: 75 + 88 + 4 + 1 = 168
             X_rows.append(feats)
             y_rows.append(label)
 
@@ -152,6 +152,8 @@ def load_data_from_directories(base_dir='Testing/csv_data'):
         'skewness', 'kurtosis',
         'amp_mean', 'amp_range', 'amp_std',
         'amp_mean_low', 'amp_mean_mid', 'amp_mean_high',
+        'phase_diff_mean', 'phase_diff_std',
+        'phase_diff_range', 'phase_diff_skew',
     ]
 
     print(f"{'='*80}")
@@ -306,7 +308,7 @@ def load_data_from_directories(base_dir='Testing/csv_data'):
     print(f"{'='*80}")
     print(f"  Training windows : {len(y_train)}")
     print(f"  Test windows     : {len(y_test)}")
-    print(f"  Features/window  : {X_train.shape[1]}  (expected 148)")
+    print(f"  Features/window  : {X_train.shape[1]}  (expected 168)")
 
     print(f"\n  Training class distribution:")
     idx_to_label = {v: k for k, v in label_mapping.items()}

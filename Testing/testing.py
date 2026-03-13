@@ -65,11 +65,14 @@ SEQ_LEN  = 28
 VALID_SC = list(range(44))
 
 AGG_FEATURES = [
-    'entropy_turb', 'iqr_turb', 'variance_turb',
-    'skewness', 'kurtosis',
-    'amp_mean', 'amp_range', 'amp_std',
-    'amp_mean_low', 'amp_mean_mid', 'amp_mean_high',
+    "entropy_turb", "iqr_turb", "variance_turb",
+    "skewness", "kurtosis",
+    "amp_mean", "amp_range", "amp_std",
+    "amp_mean_low", "amp_mean_mid", "amp_mean_high",
+    "phase_diff_mean", "phase_diff_std",
+    "phase_diff_range", "phase_diff_skew",
 ]
+
 
 
 def extract_window_features(agg_buf, sc_buf):

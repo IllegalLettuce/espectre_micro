@@ -328,6 +328,42 @@ def calc_all_subcarrier_amps(amplitudes, buf):
     return buf[:44]
 
 # ============================================================================
+# Channel Invariant Features
+# ============================================================================
+
+def calc_phase_diff(csi_raw):
+    """Differential phase between adjacent subcarriers — channel-invariant."""
+    phases = []
+    for i in range(0, len(csi_raw) - 1, 2):
+        I = csi_raw[i] if csi_raw[i] < 128 else csi_raw[i] - 256
+        Q = csi_raw[i+1] if csi_raw[i+1] < 128 else csi_raw[i+1] - 256
+        if I != 0 or Q != 0:
+            phases.append(math.atan2(Q, I))
+    return [phases[i+1] - phases[i] for i in range(len(phases)-1)]
+
+
+def calc_phase_diff_stats(csi_raw):
+    """Summary statistics of differential phase."""
+    diffs = calc_phase_diff(csi_raw)
+    if len(diffs) < 2:
+        return {'phase_diff_mean': 0.0, 'phase_diff_std': 0.0,
+                'phase_diff_range': 0.0, 'phase_diff_skew': 0.0}
+    n = len(diffs)
+    mean = sum(diffs) / n
+    variance = sum((x - mean)**2 for x in diffs) / n
+    std = math.sqrt(variance) if variance > 0 else 0.0
+    skew = 0.0
+    if std > 1e-10:
+        m3 = sum((x - mean)**3 for x in diffs) / n
+        skew = m3 / (std**3)
+    return {
+        'phase_diff_mean':  round(mean, 4),
+        'phase_diff_std':   round(std, 4),
+        'phase_diff_range': round(max(diffs) - min(diffs), 4),
+        'phase_diff_skew':  round(skew, 4),
+    }
+
+# ============================================================================
 # Feature Extractor (Publish-Time)
 # ============================================================================
 
@@ -369,6 +405,11 @@ class PublishTimeFeatureExtractor:
         phase_features = calc_phase_features(csi_raw) if csi_raw is not None else {
             'phase_mean': 0.0, 'phase_std': 0.0, 'phase_range': 0.0
         }
+        
+        phase_diff_stats = calc_phase_diff_stats(csi_raw) if csi_raw is not None else {
+            'phase_diff_mean': 0.0, 'phase_diff_std': 0.0,
+            'phase_diff_range': 0.0, 'phase_diff_skew': 0.0
+        }
 
         self.last_features = {
             # W=1 features (current packet)
@@ -396,6 +437,11 @@ class PublishTimeFeatureExtractor:
             'phase_std':   phase_features['phase_std'],
             'phase_range': phase_features['phase_range'],
 
+            # Channel Invariant Features
+            'phase_diff_mean':  phase_diff_stats['phase_diff_mean'],
+            'phase_diff_std':   phase_diff_stats['phase_diff_std'],
+            'phase_diff_range': phase_diff_stats['phase_diff_range'],
+            'phase_diff_skew':  phase_diff_stats['phase_diff_skew'],
         }
         
         return self.last_features

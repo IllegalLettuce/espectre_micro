@@ -152,6 +152,12 @@ class MQTTHandler:
                 'phase_mean':  round(features.get('phase_mean', 0), 4),
                 'phase_std':   round(features.get('phase_std', 0), 4),
                 'phase_range': round(features.get('phase_range', 0), 4),
+                
+                # Channel Invariant Features
+                'phase_diff_mean':  features.get('phase_diff_mean', 0.0),
+                'phase_diff_std':   features.get('phase_diff_std', 0.0),
+                'phase_diff_range': features.get('phase_diff_range', 0.0),
+                'phase_diff_skew':  features.get('phase_diff_skew', 0.0),
             }
             
             # Add confidence score if available

@@ -59,6 +59,11 @@ csv_writer.writerow([
     'phase_mean',
     'phase_std',
     'phase_range',
+    # Channel Invariant Features
+    'phase_diff_mean',
+    'phase_diff_std',
+    'phase_diff_range',
+    'phase_diff_skew',
 ])
 
 
@@ -150,6 +155,12 @@ def on_message(client, userdata, msg):
         f.get('phase_mean', 0),
         f.get('phase_std', 0),
         f.get('phase_range', 0),
+        
+        # Channel Invariant Features
+        f.get('phase_diff_mean', 0),
+        f.get('phase_diff_std', 0),
+        f.get('phase_diff_range', 0),
+        f.get('phase_diff_skew', 0),
     ])
     csv_file.flush()
     sample_count += 1
