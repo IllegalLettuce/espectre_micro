@@ -31,11 +31,13 @@ print(f"Model classes (raw): {model.classes_}")
 if GROUND_TRUTH not in CLASS_NAMES:
     raise ValueError(f"GROUND_TRUTH '{GROUND_TRUTH}' not in {CLASS_NAMES}")
 
-
-
-# ── CSV ───────────────────────────────────────────────────────────────────────
-NUM_SC_AMPS = 44
-SC_AMP_COLS = [f'sc_amp_{i}' for i in range(NUM_SC_AMPS)]
+# ── Feature extraction ────────────────────────────────────────────────────────
+SEQ_LEN  = 28
+VALID_SC = [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+            21,22,23,24,25,26,34,35,36,37,38,39,40,41,42,43]
+# ── CSV ────────────────────────────────────────────────────────
+NUM_SC_AMPS = 31
+SC_AMP_COLS = [f'sc_amp_{i}' for i in VALID_SC]
 
 csv_filename = f'csi_eval_{GROUND_TRUTH}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
 csv_file     = open(csv_filename, 'a', newline='')
@@ -57,12 +59,8 @@ csv_writer.writerow([
     'esp32_pps',
     'packets_dropped',
 ])
-print(f"✓ CSV: {csv_filename}\n")
+print(f"CSV: {csv_filename}\n")
 
-
-# ── Feature extraction ────────────────────────────────────────────────────────
-SEQ_LEN  = 28
-VALID_SC = list(range(44))
 
 AGG_FEATURES = [
     "entropy_turb", "iqr_turb", "variance_turb",
@@ -77,7 +75,8 @@ AGG_FEATURES = [
 
 def extract_window_features(agg_buf, sc_buf):
     agg_arr = np.array([[row[f] for f in AGG_FEATURES] for row in agg_buf], dtype='float32')
-    sc_arr  = np.array([[frame[i] for i in VALID_SC]   for frame in sc_buf],  dtype='float32')
+    sc_arr = np.array([frame for frame in sc_buf], dtype='float32')
+
 
     feats = []
     for i in range(agg_arr.shape[1]):
@@ -253,7 +252,8 @@ def on_message(client, userdata, msg):
 
     f       = payload['features']
     sc_raw  = f.get('sc_amps', [])
-    sc_amps = sc_raw[:NUM_SC_AMPS] + [0.0] * (NUM_SC_AMPS - len(sc_raw))
+    sc_amps = [float(sc_raw[i]) if i < len(sc_raw) else 0.0 for i in VALID_SC]
+
 
     agg_buffer.append({feat: f.get(feat, 0.0) for feat in AGG_FEATURES})
     sc_buffer.append(sc_amps)
