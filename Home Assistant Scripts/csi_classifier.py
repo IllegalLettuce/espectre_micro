@@ -43,7 +43,7 @@ class CSIClassifier(hass.Hass):
         self.listen_event(
             self.on_mqtt_message, "MQTT_MESSAGE", namespace="mqtt_ns"
         )
-        self.log("CSI Classifier ready — 28-frame windowed RF (148 features)")
+        self.log("CSI Classifier ready — 28-frame windowed RF (168 features)")
 
     def _extract_window_features(self, sc_win, agg_win):
         """Identical logic to build_windowed_features() in test4.py."""
