@@ -308,7 +308,7 @@ def load_data_from_directories(base_dir='Testing/csv_data'):
     print(f"{'='*80}")
     print(f"  Training windows : {len(y_train)}")
     print(f"  Test windows     : {len(y_test)}")
-    print(f"  Features/window  : {X_train.shape[1]}  (expected 168)")
+    print(f"  Features/window  : {X_train.shape[1]}  (expected 142)")
 
     print(f"\n  Training class distribution:")
     idx_to_label = {v: k for k, v in label_mapping.items()}
@@ -323,10 +323,10 @@ def load_data_from_directories(base_dir='Testing/csv_data'):
 
     window_feature_names = (
         [f"{f}_{s}" for f in aggregate_features
-                    for s in ['mean', 'std', 'max', 'p25', 'p75']]   # 55
-        + [f"{c}_wmean" for c in valid_sc_cols]                       # 44
-        + [f"{c}_wstd"  for c in valid_sc_cols]                       # 44
-        + ['vt_max', 'vt_std', 'vt_spike_count', 'vt_snr', 'vt_trend']  # 5
+                    for s in ['mean', 'std', 'max', 'p25', 'p75']] 
+        + [f"{c}_wmean" for c in valid_sc_cols]             
+        + [f"{c}_wstd"  for c in valid_sc_cols]                   
+        + ['vt_max', 'vt_std', 'vt_spike_count', 'vt_snr', 'vt_trend']
     )
 
     return X_train, X_test, y_train, y_test, window_feature_names, label_mapping

@@ -6,7 +6,6 @@ from collections import deque
 VALID_SC_INDICES = [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
                     21,22,23,24,25,26,34,35,36,37,38,39,40,41,42,43]
 
-
 AGG_FEATURES = [
     "entropy_turb", "iqr_turb", "variance_turb",
     "skewness", "kurtosis",
@@ -31,24 +30,25 @@ class CSIClassifier(hass.Hass):
             self.log(f"ERROR: Failed to load model/scaler: {e}", level="ERROR")
             return
 
-        # ── NEW: sliding window buffers ──────────────────────────────
-        self.SEQ_LEN    = 28           # ~1s at 28.6 Hz
+        self.SEQ_LEN        = 28
+        self.STRIDE         = 8
+        self.stride_counter = 0
+
         self.sc_buffer  = deque(maxlen=self.SEQ_LEN)
         self.agg_buffer = deque(maxlen=self.SEQ_LEN)
+
         self.last_frame_time      = None
         self.last_published_state = None
         self.publish_counter      = 0
-        # ─────────────────────────────────────────────────────────────
 
         self.class_names = {0: "Baseline", 1: "Quadrant_1", 2: "Quadrant_2"}
 
         self.listen_event(
             self.on_mqtt_message, "MQTT_MESSAGE", namespace="mqtt_ns"
         )
-        self.log("CSI Classifier ready — 28-frame windowed RF (142 features)")
+        self.log("CSI Classifier ready — 28-frame windowed RF, stride=8, 142 features")
 
     def _extract_window_features(self, sc_win, agg_win):
-        """Identical logic to build_windowed_features() in test4.py."""
         feats = []
         for i in range(agg_win.shape[1]):
             col = agg_win[:, i]
@@ -85,11 +85,12 @@ class CSIClassifier(hass.Hass):
                 if (now - self.last_frame_time).total_seconds() > 0.5:
                     self.sc_buffer.clear()
                     self.agg_buffer.clear()
+                    self.stride_counter = 0
                     self.log("Buffer flushed — frame gap detected")
             self.last_frame_time = now
             # ─────────────────────────────────────────────────────────
 
-            sc_amps = features_src.get("sc_amps", [])
+            sc_amps  = features_src.get("sc_amps", [])
             sc_frame = np.array(
                 [float(sc_amps[i]) if i < len(sc_amps) else 0.0
                  for i in VALID_SC_INDICES], dtype='float32')
@@ -101,14 +102,18 @@ class CSIClassifier(hass.Hass):
             self.agg_buffer.append(agg_frame)
 
             if len(self.sc_buffer) < self.SEQ_LEN:
-                return   # still filling — silent, no log spam
+                return
 
-            # ── Build window feature vector ───────────────────────────
+            # ── Stride gate ───────────────────────────────────────────
+            self.stride_counter += 1
+            if self.stride_counter % self.STRIDE != 0:
+                return
+            # ─────────────────────────────────────────────────────────
+
             feat    = self._extract_window_features(
                         np.array(self.sc_buffer),
                         np.array(self.agg_buffer)).reshape(1, -1)
             feat_sc = self.scaler.transform(feat)
-            # ─────────────────────────────────────────────────────────
 
             prediction    = int(self.model.predict(feat_sc)[0])
             probabilities = self.model.predict_proba(feat_sc)[0]
@@ -123,9 +128,9 @@ class CSIClassifier(hass.Hass):
                 f"| conf={confidence:.2f}"
             )
 
-            # ── Throttle: publish on change OR every 10 frames ────────
+            # ── Publish on change OR every 3 predictions (~1s cadence)
             self.publish_counter += 1
-            if location != self.last_published_state or self.publish_counter >= 10:
+            if location != self.last_published_state or self.publish_counter >= 3:
                 self.set_state(
                     "sensor.csi_location",
                     state=location,
