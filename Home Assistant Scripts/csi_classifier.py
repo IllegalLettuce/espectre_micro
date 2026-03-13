@@ -10,7 +10,6 @@ AGG_FEATURES = [
     "skewness", "kurtosis",
     "amp_mean", "amp_range", "amp_std",
     "amp_mean_low", "amp_mean_mid", "amp_mean_high",
-    'phase_mean', 'phase_std', 'phase_range',
 ]
 
 class CSIClassifier(hass.Hass):

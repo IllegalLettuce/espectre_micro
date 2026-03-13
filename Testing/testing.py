@@ -24,10 +24,10 @@ scaler      = joblib.load(SCALER_PATH)
 LABEL_MAP   = {0: 'Baseline', 1: 'Quadrant_1', 2: 'Quadrant_2'}
 CLASS_NAMES = ['Baseline', 'Quadrant_1', 'Quadrant_2']
 
-print(f"✓ Model loaded:  {MODEL_PATH}")
-print(f"✓ Classes: {CLASS_NAMES}")
-print(f"✓ Ground truth: '{GROUND_TRUTH}'")
-print(f"✓ Model classes (raw): {model.classes_}")
+print(f"Model loaded:  {MODEL_PATH}")
+print(f"Classes: {CLASS_NAMES}")
+print(f"Ground truth: '{GROUND_TRUTH}'")
+print(f"Model classes (raw): {model.classes_}")
 if GROUND_TRUTH not in CLASS_NAMES:
     raise ValueError(f"GROUND_TRUTH '{GROUND_TRUTH}' not in {CLASS_NAMES}")
 
@@ -221,15 +221,15 @@ def stop_collection():
 # ── MQTT ──────────────────────────────────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
-        print(f"✓ Connected to MQTT broker")
+        print(f"Connected to MQTT broker")
         client.subscribe("home/espectre/node1")
-        print(f"✓ Subscribed — warmup {WARMUP_SECONDS}s...")
+        print(f"Subscribed — warmup {WARMUP_SECONDS}s...")
         threading.Timer(WARMUP_SECONDS, start_collection).start()
 
 def on_message(client, userdata, msg):
     global clock_offset_ms
 
-    recv_wall_ms  = time.time() * 1000   # keep for traffic stats
+    recv_wall_ms  = time.time() * 1000
     payload_bytes = len(msg.payload)
     traffic_log.append(payload_bytes)
     msg_times.append(time.time())
@@ -241,10 +241,6 @@ def on_message(client, userdata, msg):
 
     if 'features' not in payload:
         return
-
-    # ── Remove clock offset block entirely ───────────────────────────────
-    # ESP32 timestamp is ticks_ms() since boot — cross-device clock math
-    # is unreliable. Pipeline latency (recv→prediction) is measured instead.
 
     pps_log.append(payload.get('pps', 0))
     dropped_log.append(payload.get('packets_dropped', 0))
@@ -272,7 +268,7 @@ def on_message(client, userdata, msg):
     features        = extract_window_features(list(agg_buffer), list(sc_buffer))
     features_scaled = scaler.transform(features.reshape(1, -1))
     proba           = model.predict_proba(features_scaled)[0]
-    pipeline_ms     = (time.time() - t0) * 1000   # inference only (buffer fill is structural)
+    pipeline_ms     = (time.time() - t0) * 1000   
 
     pred_idx = int(np.argmax(proba))
     pred     = LABEL_MAP[pred_idx]
@@ -301,7 +297,7 @@ def on_message(client, userdata, msg):
         round(prob_map.get('Quadrant_2', 0), 4),
         round(conf, 4),
         round(pipeline_ms, 3),
-        '',                              # transport_ms removed — clock skew unreliable
+        '',                              
         payload_bytes,
         payload.get('pps', ''),
         payload.get('packets_dropped', ''),
@@ -315,14 +311,13 @@ def on_message(client, userdata, msg):
     COLOURS = {'Baseline': '\033[92m', 'Quadrant_1': '\033[93m', 'Quadrant_2': '\033[91m'}
     RESET   = '\033[0m'
     colour  = COLOURS.get(pred, '')
-    tick    = '✓' if correct else '✗'
 
     print(
-        f"  {tick} {colour}{pred:12s}{RESET} conf={conf:.2f} | "
+        f"{colour}{pred:12s}{RESET} conf={conf:.2f} | "
         f"B={prob_map['Baseline']:.2f} Q1={prob_map['Quadrant_1']:.2f} "
         f"Q2={prob_map['Quadrant_2']:.2f} | "
         f"{remaining:.0f}s left | acc={running_acc:.1f}% | "
-        f"infer={pipeline_ms:.1f}ms | {payload_bytes}B"   # transport removed from display
+        f"infer={pipeline_ms:.1f}ms | {payload_bytes}B"   
     )
 
 
