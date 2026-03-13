@@ -3,7 +3,9 @@ import json, os, traceback
 import numpy as np
 from collections import deque
 
-VALID_SC_INDICES = list(range(44)) 
+VALID_SC_INDICES = [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
+                    21,22,23,24,25,26,34,35,36,37,38,39,40,41,42,43]
+
 
 AGG_FEATURES = [
     "entropy_turb", "iqr_turb", "variance_turb",
@@ -43,7 +45,7 @@ class CSIClassifier(hass.Hass):
         self.listen_event(
             self.on_mqtt_message, "MQTT_MESSAGE", namespace="mqtt_ns"
         )
-        self.log("CSI Classifier ready — 28-frame windowed RF (168 features)")
+        self.log("CSI Classifier ready — 28-frame windowed RF (142 features)")
 
     def _extract_window_features(self, sc_win, agg_win):
         """Identical logic to build_windowed_features() in test4.py."""
