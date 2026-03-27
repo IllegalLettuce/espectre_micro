@@ -7,10 +7,11 @@ import joblib
 import csv
 from collections import deque
 from datetime import datetime
-
+import base64
+import struct
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-GROUND_TRUTH       = "Baseline"
+GROUND_TRUTH       = "Quadrant_1"
 WARMUP_SECONDS     = 3
 COLLECTION_SECONDS = 45
 
@@ -102,7 +103,7 @@ def extract_window_features(agg_buf, sc_buf):
 
 # ── State ─────────────────────────────────────────────────────────────────────
 agg_buffer  = deque(maxlen=SEQ_LEN)
-sc_buffer   = deque(maxlen=SEQ_LEN)
+sc_buffer   = deque(maxlen=SEQ_LEN)              
 
 warmup_complete   = False
 collection_active = False
@@ -251,8 +252,15 @@ def on_message(client, userdata, msg):
         return
 
     f       = payload['features']
-    sc_raw  = f.get('sc_amps', [])
-    sc_amps = [float(sc_raw[i]) if i < len(sc_raw) else 0.0 for i in VALID_SC]
+    sc_raw = f.get('sc_amps', '')
+    if isinstance(sc_raw, str) and sc_raw:
+        buf = base64.b64decode(sc_raw)
+        decoded = [struct.unpack_from('>H', buf, i * 2)[0] / 100.0
+                for i in range(len(buf) // 2)]
+    else:
+        decoded = sc_raw if isinstance(sc_raw, list) else []
+
+    sc_amps = [float(decoded[i]) if i < len(decoded) else 0.0 for i in VALID_SC]
 
 
     agg_buffer.append({feat: f.get(feat, 0.0) for feat in AGG_FEATURES})

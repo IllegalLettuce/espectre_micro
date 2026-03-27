@@ -22,6 +22,17 @@ Author: Francesco Pace <francesco.pace@gmail.com>
 License: GPLv3
 """
 import math
+import ubinascii
+import struct
+
+def encode_sc_amps(sc_amps):
+    """Pack 44 floats as uint16 (x100) → base64 string."""
+    buf = bytearray(len(sc_amps) * 2)
+    for i, v in enumerate(sc_amps):
+        val = min(65535, int(v * 100))
+        struct.pack_into('>H', buf, i * 2, val)
+    return ubinascii.b2a_base64(buf).decode().strip()
+
 
 # ============================================================================
 # W=1 Features (Current Packet Amplitudes)
@@ -259,40 +270,6 @@ def calc_subband_features(amplitudes):
         'amp_mean_mid': sum(mid_band) / len(mid_band) if mid_band else 0,
         'amp_mean_high': sum(high_band) / len(high_band) if high_band else 0,
     }
-      
-def calc_phase_features(csi_raw):
-    """
-    Extract phase statistics from raw I/Q bytes.
-
-    Computes per-subcarrier phase angles from signed int8 I/Q pairs and
-    returns summary statistics. Phase is more sensitive to position than
-    amplitude because it encodes path length differences between the
-    transmitter, reflectors, and receiver.
-
-    Raw bytes from MicroPython bytearray are unsigned (0-255), so values
-    above 127 are sign-corrected to the range [-128, 127] before use.
-
-    Args:
-        csi_raw: Raw CSI bytes as bytearray (I0, Q0, I1, Q1, ...)
-
-    Returns:
-        dict: Keys phase_mean, phase_std, phase_range (floats, radians)
-    """
-    phases = []
-    for i in range(0, len(csi_raw) - 1, 2):
-        I = csi_raw[i] if csi_raw[i] < 128 else csi_raw[i] - 256
-        Q = csi_raw[i+1] if csi_raw[i+1] < 128 else csi_raw[i+1] - 256
-        if I != 0 or Q != 0:
-            phases.append(math.atan2(Q, I))
-    if len(phases) < 2:
-        return {'phase_mean': 0.0, 'phase_std': 0.0, 'phase_range': 0.0}
-    mean = sum(phases) / len(phases)
-    std = math.sqrt(sum((p - mean)**2 for p in phases) / len(phases))
-    return {
-        'phase_mean': round(mean, 4),
-        'phase_std': round(std, 4),
-        'phase_range': round(max(phases) - min(phases), 4)
-    }
 
     
 def calc_iqr_turb_real(turbulence_buffer, buffer_count):
@@ -342,26 +319,51 @@ def calc_phase_diff(csi_raw):
     return [phases[i+1] - phases[i] for i in range(len(phases)-1)]
 
 
-def calc_phase_diff_stats(csi_raw):
-    """Summary statistics of differential phase."""
-    diffs = calc_phase_diff(csi_raw)
-    if len(diffs) < 2:
-        return {'phase_diff_mean': 0.0, 'phase_diff_std': 0.0,
-                'phase_diff_range': 0.0, 'phase_diff_skew': 0.0}
-    n = len(diffs)
-    mean = sum(diffs) / n
-    variance = sum((x - mean)**2 for x in diffs) / n
-    std = math.sqrt(variance) if variance > 0 else 0.0
-    skew = 0.0
-    if std > 1e-10:
-        m3 = sum((x - mean)**3 for x in diffs) / n
-        skew = m3 / (std**3)
-    return {
-        'phase_diff_mean':  round(mean, 4),
-        'phase_diff_std':   round(std, 4),
-        'phase_diff_range': round(max(diffs) - min(diffs), 4),
-        'phase_diff_skew':  round(skew, 4),
+def calc_phase_and_diff_stats(csi_raw):
+    """Single pass for both phase and differential phase stats."""
+    phases = []
+    for i in range(0, len(csi_raw) - 1, 2):
+        I = csi_raw[i] if csi_raw[i] < 128 else csi_raw[i] - 256
+        Q = csi_raw[i+1] if csi_raw[i+1] < 128 else csi_raw[i+1] - 256
+        if I != 0 or Q != 0:
+            phases.append(math.atan2(Q, I))
+
+    if len(phases) < 2:
+        return (
+            {'phase_mean': 0.0, 'phase_std': 0.0, 'phase_range': 0.0},
+            {'phase_diff_mean': 0.0, 'phase_diff_std': 0.0,
+             'phase_diff_range': 0.0, 'phase_diff_skew': 0.0}
+        )
+
+    # Phase stats
+    n = len(phases)
+    mean = sum(phases) / n
+    std = math.sqrt(sum((p - mean)**2 for p in phases) / n)
+    phase_stats = {
+        'phase_mean': round(mean, 4),
+        'phase_std': round(std, 4),
+        'phase_range': round(max(phases) - min(phases), 4)
     }
+
+    # Diff stats (reuse phases list, no second I/Q pass)
+    diffs = [phases[i+1] - phases[i] for i in range(n - 1)]
+    nd = len(diffs)
+    dmean = sum(diffs) / nd
+    dvariance = sum((x - dmean)**2 for x in diffs) / nd
+    dstd = math.sqrt(dvariance) if dvariance > 0 else 0.0
+    dskew = 0.0
+    if dstd > 1e-10:
+        m3 = sum((x - dmean)**3 for x in diffs) / nd
+        dskew = m3 / (dstd**3)
+    diff_stats = {
+        'phase_diff_mean':  round(dmean, 4),
+        'phase_diff_std':   round(dstd, 4),
+        'phase_diff_range': round(max(diffs) - min(diffs), 4),
+        'phase_diff_skew':  round(dskew, 4),
+    }
+
+    return phase_stats, diff_stats
+
 
 # ============================================================================
 # Feature Extractor (Publish-Time)
@@ -402,15 +404,12 @@ class PublishTimeFeatureExtractor:
             dict: All 7 features
         """
         subband_features = calc_subband_features(amplitudes)
-        phase_features = calc_phase_features(csi_raw) if csi_raw is not None else {
-            'phase_mean': 0.0, 'phase_std': 0.0, 'phase_range': 0.0
-        }
-        
-        phase_diff_stats = calc_phase_diff_stats(csi_raw) if csi_raw is not None else {
-            'phase_diff_mean': 0.0, 'phase_diff_std': 0.0,
-            'phase_diff_range': 0.0, 'phase_diff_skew': 0.0
-        }
-
+        if csi_raw is not None:
+            phase_features, phase_diff_stats = calc_phase_and_diff_stats(csi_raw)
+        else:
+            phase_features = {'phase_mean': 0.0, 'phase_std': 0.0, 'phase_range': 0.0}
+            phase_diff_stats = {'phase_diff_mean': 0.0, 'phase_diff_std': 0.0,
+                                'phase_diff_range': 0.0, 'phase_diff_skew': 0.0}
         self.last_features = {
             # W=1 features (current packet)
             'skewness': calc_skewness(amplitudes),
@@ -430,7 +429,7 @@ class PublishTimeFeatureExtractor:
             'amp_mean_low': subband_features['amp_mean_low'],
             'amp_mean_mid': subband_features['amp_mean_mid'],
             'amp_mean_high': subband_features['amp_mean_high'],
-            'sc_amps': calc_all_subcarrier_amps(amplitudes, self._sc_buf),  # all 64 subcarriers,        
+            'sc_amps': encode_sc_amps(calc_all_subcarrier_amps(amplitudes, self._sc_buf)),
                         
             # Phase features from raw I/Q
             'phase_mean':  phase_features['phase_mean'],

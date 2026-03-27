@@ -2,6 +2,8 @@ import appdaemon.plugins.hass.hassapi as hass
 import json, os, traceback
 import numpy as np
 from collections import deque
+import base64
+import struct
 
 VALID_SC_INDICES = [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
                     21,22,23,24,25,26,34,35,36,37,38,39,40,41,42,43]
@@ -90,10 +92,22 @@ class CSIClassifier(hass.Hass):
             self.last_frame_time = now
             # ─────────────────────────────────────────────────────────
 
-            sc_amps  = features_src.get("sc_amps", [])
+            sc_amps_raw = features_src.get("sc_amps", "")
+            if isinstance(sc_amps_raw, str) and sc_amps_raw:
+                # Decode base64 packed uint16
+                buf = base64.b64decode(sc_amps_raw)
+                sc_amps = [struct.unpack_from('>H', buf, i * 2)[0] / 100.0
+                        for i in range(len(buf) // 2)]
+            else:
+                # Fallback: handle legacy list format or empty
+                sc_amps = sc_amps_raw if isinstance(sc_amps_raw, list) else []
+
             sc_frame = np.array(
                 [float(sc_amps[i]) if i < len(sc_amps) else 0.0
-                 for i in VALID_SC_INDICES], dtype='float32')
+                for i in VALID_SC_INDICES], dtype='float32')
+            
+            
+            # ─────────────────────────────────────────────────────────
             agg_frame = np.array(
                 [float(features_src.get(f, 0.0)) for f in AGG_FEATURES],
                 dtype='float32')

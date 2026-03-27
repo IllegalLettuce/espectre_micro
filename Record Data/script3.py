@@ -4,21 +4,23 @@ import csv
 from datetime import datetime
 import time
 import threading
+import base64
+import struct
 
 # door states (2^3)
-DOOR_STATE = "0_0_0" #=> all doors closed 
+# DOOR_STATE = "0_0_0" #=> all doors closed 
 # DOOR_STATE = "1_0_0" #=> door to living room open 
 # DOOR_STATE = "0_1_0" #=> door to study room open 
 # DOOR_STATE = "0_0_1" #=> door to kitchen open 
 # DOOR_STATE = "0_1_1" #=> door to study room and kitchen open 
 # DOOR_STATE = "1_1_0" #=> door to living room and study room open 
 # DOOR_STATE = "1_0_1" #=> door to living room and kitchen open
-# DOOR_STATE = "1_1_1" #=> all doors open 
+DOOR_STATE = "1_1_1" #=> all doors open 
 
 # change when switching what to record
-AREA = "baseline"
+# AREA = "baseline"
 # AREA = "movement_stairs"
-# AREA = "movement_hallway"
+AREA = "movement_hallway"
 
 CURRENT_LABEL = f"{AREA}_{DOOR_STATE}"
 
@@ -126,10 +128,16 @@ def on_message(client, userdata, msg):
 
     f = payload['features']
 
-    # Extract sc_amps list — pad/truncate to exactly NUM_SC_AMPS values
-    sc_amps_raw = f.get('sc_amps', [])
-    sc_amps = sc_amps_raw[:NUM_SC_AMPS]                      # truncate if too long
-    sc_amps += [0.0] * (NUM_SC_AMPS - len(sc_amps))          # pad if too short
+    sc_amps_raw = f.get('sc_amps', '')
+    if isinstance(sc_amps_raw, str) and sc_amps_raw:
+        buf = base64.b64decode(sc_amps_raw)
+        sc_amps = [struct.unpack_from('>H', buf, i * 2)[0] / 100.0
+                for i in range(len(buf) // 2)]
+    else:
+        sc_amps = sc_amps_raw if isinstance(sc_amps_raw, list) else []
+
+    sc_amps = sc_amps[:NUM_SC_AMPS]
+    sc_amps += [0.0] * (NUM_SC_AMPS - len(sc_amps))
 
     csv_writer.writerow([
         datetime.now().isoformat(),
