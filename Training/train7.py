@@ -10,15 +10,20 @@ import joblib
 
 NULL_SUBCARRIER_INDICES = {0, 1, 2, 3, 4, 5, 27, 28, 29, 30, 31, 32, 33, 59, 60, 61, 62, 63}
 
-# Index of variance_turb_mean in the final feature vector.
-# variance_turb is aggregate feature index 2, and mean is the first of 5 stats,
-# so position = 2 * 5 + 0 = 10.
+# VT_MEAN_IDX: variance_turb is aggregate index 2, mean is the 0th stat → 2*5+0 = 10
 VT_MEAN_IDX = 10
 
-# Aggregate feature indices that carry absolute amplitude (session-level DC offset).
-# These are divided by the window's global SC mean to remove the offset.
-# Indices: amp_mean=5, amp_range=6, amp_std=7, amp_mean_low=8, amp_mean_mid=9, amp_mean_high=10
-AMP_AGG_INDICES = {5, 6, 7, 8, 9, 10}
+# Normalisation strategy per aggregate feature index:
+#   LINEAR  (÷ sc_global_mean)  : iqr_turb, entropy_turb, amp_mean family
+#                                  These are amplitude-linear measures.
+#   QUADRATIC (÷ sc_global_mean²): variance_turb only.
+#                                  Variance of raw amplitudes scales with amp²,
+#                                  so a single linear division still leaves a
+#                                  residual amplitude dependency.
+#   NONE                         : skewness, kurtosis, phase_diff_*
+#                                  These are already dimensionless or relative.
+LINEAR_NORM_INDICES    = {0, 1, 5, 6, 7, 8, 9, 10}  # entropy, iqr, amp family
+QUADRATIC_NORM_INDICES = {2}                           # variance_turb
 
 
 def get_sc_feature_columns(dataframe):
@@ -48,41 +53,44 @@ def build_windowed_features(dataframe, aggregate_features, valid_sc_cols,
     """
     Build flat feature vectors from sliding windows over each session.
 
-    Normalisation strategy:
-      - Turbulence/distribution aggregate features (variance_turb, entropy_turb,
-        iqr_turb, skewness, kurtosis, phase_diff_*): kept raw — they are already
-        relative measures with no session-level DC offset.
-      - Absolute amplitude aggregates (amp_mean, amp_range, amp_std,
-        amp_mean_low/mid/high): divided by the window's global SC mean to remove
-        the session-to-session amplitude shift caused by AGC/temperature drift.
-      - Per-subcarrier amplitudes: divided by window global SC mean to preserve
-        the relative spatial fingerprint while removing the DC offset.
+    Normalisation per aggregate feature type:
+      - entropy_turb, iqr_turb, amp_mean family: divided by sc_global_mean
+        (amplitude-linear measures)
+      - variance_turb: divided by sc_global_mean² (scales with amplitude²)
+      - skewness, kurtosis, phase_diff_*: kept raw (dimensionless)
+      - Per-subcarrier amplitudes: divided by sc_global_mean
 
-    Returns X, y, and group IDs (one ID per source file) for GroupKFold.
+    All normalisation is window-local (per-window sc_global_mean), making
+    features invariant to session-level AGC/temperature amplitude drift.
+
+    Returns X, y, and group IDs (one per source file) for GroupKFold.
     """
     X_rows, y_rows, group_rows = [], [], []
     group_id = 0
 
     for source_file, group in dataframe.groupby('source_file'):
-        group  = group.reset_index(drop=True)
-        n      = len(group)
+        group   = group.reset_index(drop=True)
+        n       = len(group)
         sc_arr  = group[valid_sc_cols].values.astype('float32')
         agg_arr = group[aggregate_features].values.astype('float32')
         label   = group['label'].iloc[0]
 
         for start in range(0, n - seq_len + 1, stride):
-            end    = start + seq_len
-            sc_win  = sc_arr[start:end]    # (seq_len, n_sc)
-            agg_win = agg_arr[start:end]   # (seq_len, n_agg)
+            end     = start + seq_len
+            sc_win  = sc_arr[start:end]
+            agg_win = agg_arr[start:end]
 
-            sc_global_mean = float(np.mean(sc_win)) + 1e-6
+            sc_global_mean  = float(np.mean(sc_win)) + 1e-6
+            sc_global_mean2 = sc_global_mean ** 2
 
             feats = []
 
             # 1. Aggregate feature stats — 15 × 5 = 75
             for i in range(agg_win.shape[1]):
-                col = agg_win[:, i]
-                if i in AMP_AGG_INDICES:
+                col = agg_win[:, i].copy()
+                if i in QUADRATIC_NORM_INDICES:
+                    col = col / sc_global_mean2
+                elif i in LINEAR_NORM_INDICES:
                     col = col / sc_global_mean
                 feats += [
                     float(np.mean(col)),
@@ -97,8 +105,9 @@ def build_windowed_features(dataframe, aggregate_features, valid_sc_cols,
             feats.extend(np.mean(sc_norm, axis=0).tolist())
             feats.extend(np.std(sc_norm,  axis=0).tolist())
 
-            # 3. Spike features on variance_turb (index 2) — 4
-            vt      = agg_win[:, 2]
+            # 3. Spike features on variance_turb — 4
+            #    Divide by sc_global_mean² for the same reason as section 1
+            vt      = agg_win[:, 2] / sc_global_mean2
             vt_mean = float(np.mean(vt))
             vt_max  = float(np.max(vt))
             vt_std  = float(np.std(vt))
@@ -106,7 +115,7 @@ def build_windowed_features(dataframe, aggregate_features, valid_sc_cols,
                 vt_max,
                 vt_std,
                 float(np.sum(vt > vt_mean + 2 * vt_std)),
-                float(vt_max / (vt_mean + 1e-6)),
+                float(vt_max / (vt_mean + 1e-9)),
             ]
 
             # 4. Temporal trend — 1
@@ -221,10 +230,6 @@ def load_data_from_directories(base_dir='csv_data'):
     print(f"  Subcarrier features : {len(valid_sc_cols)}")
     print(f"  Total features      : {len(aggregate_features) + len(valid_sc_cols)}")
 
-    # ------------------------------------------------------------------ #
-    #  SESSION-LEVEL TRAIN/TEST SPLIT                                     #
-    #  Hold out the LAST session per door state per class as test.        #
-    # ------------------------------------------------------------------ #
     unique_labels = sorted(combined_df['label'].unique())
     label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
 
@@ -286,20 +291,18 @@ def load_data_from_directories(base_dir='csv_data'):
     for idx in sorted(label_mapping.values()):
         print(f"    {idx_to_label[idx]:15s}: {np.sum(y_test == idx):4d} windows")
 
-    # ------------------------------------------------------------------ #
-    #  VARIANCE_TURB DIAGNOSTIC                                           #
-    # ------------------------------------------------------------------ #
+    # Diagnostic: verify vt normalisation achieved train/test alignment
     print(f"\n{'='*80}")
-    print("VARIANCE_TURB_MEAN DIAGNOSTIC (raw, pre-scaling)")
+    print("VARIANCE_TURB_MEAN DIAGNOSTIC (÷ sc_global_mean²)")
     print(f"{'='*80}")
-    print(f"  {'Class':12s}  {'Split':6s}  {'mean':8s}  {'p10':8s}  {'p90':8s}  {'max':8s}")
+    print(f"  {'Class':12s}  {'Split':6s}  {'mean':9s}  {'p10':9s}  {'p90':9s}  {'max':9s}")
     for split_name, X, y in [('train', X_train, y_train), ('test', X_test, y_test)]:
         for idx in sorted(label_mapping.values()):
             mask = y == idx
             vals = X[mask, VT_MEAN_IDX]
             print(f"  {idx_to_label[idx]:12s}  {split_name:6s}  "
-                  f"{np.mean(vals):8.4f}  {np.percentile(vals,10):8.4f}  "
-                  f"{np.percentile(vals,90):8.4f}  {np.max(vals):8.4f}")
+                  f"{np.mean(vals):9.6f}  {np.percentile(vals,10):9.6f}  "
+                  f"{np.percentile(vals,90):9.6f}  {np.max(vals):9.6f}")
 
     window_feature_names = (
         [f"{f}_{s}" for f in aggregate_features for s in ['mean', 'std', 'max', 'p25', 'p75']]
@@ -311,41 +314,23 @@ def load_data_from_directories(base_dir='csv_data'):
     return X_train, X_test, y_train, y_test, window_feature_names, label_mapping, groups_train
 
 
-def predict_two_stage(X, model, vt_threshold, label_mapping):
-    """
-    Stage 1: variance_turb_mean threshold → Baseline vs motion.
-    Stage 2: RF predicts which quadrant for motion windows.
-    Any window below the threshold is classified as Baseline regardless
-    of what the RF would say, making the classifier robust to amplitude drift.
-    """
-    baseline_idx = label_mapping['Baseline']
-    q1_idx       = label_mapping['Quadrant_1']
-
-    predictions = np.full(len(X), baseline_idx)
-    motion_mask = X[:, VT_MEAN_IDX] > vt_threshold
-
-    if motion_mask.sum() > 0:
-        rf_preds = model.predict(X[motion_mask])
-        rf_preds[rf_preds == baseline_idx] = q1_idx  # safety fallback
-        predictions[motion_mask] = rf_preds
-
-    return predictions
-
-
 def train_random_forest(X_train, X_test, y_train, y_test,
                         feature_names, label_mapping, groups_train):
     """
-    Train a two-stage classifier:
-      Stage 1 — motion detection via variance_turb_mean threshold (no scaling needed).
-      Stage 2 — RF quadrant classifier trained on motion windows only.
+    Single 3-class Random Forest classifier.
 
-    Random Forests are scale-invariant (split decisions use only feature ordering),
-    so StandardScaler is intentionally omitted. Scaling was causing test-time
-    distribution shift because the scaler was fit on morning training sessions
-    and applied to afternoon test sessions with different absolute amplitude levels.
+    No StandardScaler — RF is scale-invariant (split decisions use only
+    feature ordering). Scaling was causing distribution shift because the
+    scaler was fit on morning training sessions and applied to afternoon
+    test sessions. All amplitude invariance is handled in build_windowed_features
+    via per-window sc_global_mean / sc_global_mean² normalisation.
+
+    The two-stage threshold approach was abandoned because Q1 (hallway motion)
+    is weak-motion that genuinely overlaps with Baseline in variance_turb space.
+    The RF uses all 142 features jointly (subcarrier spatial fingerprint +
+    turbulence statistics) to make this distinction where a single threshold
+    on one feature cannot.
     """
-    baseline_idx = label_mapping['Baseline']
-    q1_idx       = label_mapping['Quadrant_1']
     idx_to_label = {idx: label for label, idx in label_mapping.items()}
 
     total = len(X_train) + len(X_test)
@@ -355,41 +340,16 @@ def train_random_forest(X_train, X_test, y_train, y_test,
     print(f"Training set size: {len(X_train)} samples ({len(X_train)/total*100:.1f}%)")
     print(f"Test set size:     {len(X_test)} samples ({len(X_test)/total*100:.1f}%)")
 
-    # ------------------------------------------------------------------ #
-    #  STAGE 1 — MOTION DETECTION THRESHOLD                              #
-    # ------------------------------------------------------------------ #
-    baseline_mask = y_train == baseline_idx
-    motion_mask   = y_train != baseline_idx
-
-    vt_baseline = X_train[baseline_mask, VT_MEAN_IDX]
-    vt_motion   = X_train[motion_mask,   VT_MEAN_IDX]
-
-    vt_threshold = (np.percentile(vt_baseline, 90) + np.percentile(vt_motion, 10)) / 2
-
     print(f"\n{'='*80}")
-    print("STAGE 1 — MOTION DETECTION THRESHOLD")
+    print("HYPERPARAMETER SEARCH (RandomizedSearchCV + GroupKFold)")
     print(f"{'='*80}")
-    print(f"  Baseline vt_mean p90 : {np.percentile(vt_baseline, 90):.4f}")
-    print(f"  Motion   vt_mean p10 : {np.percentile(vt_motion, 10):.4f}")
-    print(f"  Threshold            : {vt_threshold:.4f}")
-
-    # ------------------------------------------------------------------ #
-    #  STAGE 2 — RF TRAINED ON MOTION WINDOWS ONLY                      #
-    # ------------------------------------------------------------------ #
-    X_train_motion = X_train[motion_mask]
-    y_train_motion = y_train[motion_mask]
-    groups_motion  = groups_train[motion_mask]
-
-    print(f"\n{'='*80}")
-    print("STAGE 2 — HYPERPARAMETER SEARCH (motion windows only)")
-    print(f"{'='*80}")
-    print(f"  Motion training windows : {len(y_train_motion)}")
-    print(f"  Search iterations       : 50")
-    print(f"  CV folds                : 5 (session-aware GroupKFold)")
-    print(f"  Scoring                 : balanced_accuracy\n")
+    print(f"  Search iterations : 50")
+    print(f"  CV folds          : 5 (session-aware)")
+    print(f"  Scoring           : balanced_accuracy")
+    print(f"  n_jobs            : -1 (all cores)\n")
 
     param_dist = {
-        'n_estimators':      randint(100, 500),
+        'n_estimators':      randint(100, 600),
         'max_depth':         [8, 10, 12, 15, 20, None],
         'min_samples_split': randint(2, 20),
         'min_samples_leaf':  randint(1, 10),
@@ -407,26 +367,22 @@ def train_random_forest(X_train, X_test, y_train, y_test,
         random_state=42,
     )
 
-    search.fit(X_train_motion, y_train_motion, groups=groups_motion)
+    search.fit(X_train, y_train, groups=groups_train)
+    best_model = search.best_estimator_
 
     print(f"\n  Best CV balanced_accuracy : {search.best_score_:.4f}")
     print(f"  Best parameters:")
     for k, v in sorted(search.best_params_.items()):
         print(f"    {k:22s}: {v}")
 
-    best_model = search.best_estimator_
-
-    # ------------------------------------------------------------------ #
-    #  EVALUATION — TWO-STAGE PREDICTIONS                                #
-    # ------------------------------------------------------------------ #
-    y_pred_train = predict_two_stage(X_train, best_model, vt_threshold, label_mapping)
-    y_pred_test  = predict_two_stage(X_test,  best_model, vt_threshold, label_mapping)
+    y_pred_train = best_model.predict(X_train)
+    y_pred_test  = best_model.predict(X_test)
 
     train_accuracy = accuracy_score(y_train, y_pred_train)
     test_accuracy  = accuracy_score(y_test,  y_pred_test)
 
     print(f"\n{'='*80}")
-    print(f"RESULTS (two-stage classifier)")
+    print(f"RESULTS")
     print(f"{'='*80}")
     print(f"Training Accuracy: {train_accuracy:.4f} ({train_accuracy*100:.2f}%)")
     print(f"Test Accuracy:     {test_accuracy:.4f} ({test_accuracy*100:.2f}%)")
@@ -459,21 +415,20 @@ def train_random_forest(X_train, X_test, y_train, y_test,
             print(f"{conf[i][j]:15d}", end='')
         print()
 
-    # Feature importances from stage 2 RF only
     importance_indices = np.argsort(best_model.feature_importances_)[::-1]
     print(f"\n{'='*80}")
-    print("FEATURE IMPORTANCES — Stage 2 RF (Ranked)")
+    print("FEATURE IMPORTANCES (Ranked)")
     print(f"{'='*80}")
     print(f"{'Rank':>4s} {'Feature':25s} {'Importance':>12s} {'Percentage':>12s}")
     print(f"{'-'*80}")
     for i, fi in enumerate(importance_indices):
-        imp  = best_model.feature_importances_[fi]
-        pct  = imp * 100
-        bar  = '█' * int(pct * 0.5)
+        imp = best_model.feature_importances_[fi]
+        pct = imp * 100
+        bar = '█' * int(pct * 0.5)
         print(f"{i+1:3d}. {feature_names[fi]:25s} {imp:11.4f} ({pct:5.1f}%) {bar}")
     print(f"{'='*80}\n")
 
-    return best_model, label_mapping, vt_threshold
+    return best_model, label_mapping
 
 
 def main():
@@ -484,26 +439,24 @@ def main():
     X_train, X_test, y_train, y_test, feature_names, label_mapping, groups_train = \
         load_data_from_directories('csv_data')
 
-    trained_model, label_map, vt_threshold = train_random_forest(
+    trained_model, label_map = train_random_forest(
         X_train, X_test, y_train, y_test, feature_names, label_mapping, groups_train)
 
     model_filename = 'rf_spatial_classifier.pkl'
-    joblib.dump(trained_model,  model_filename)
-    joblib.dump(vt_threshold,   'rf_vt_threshold.pkl')
-    joblib.dump(label_map,      'rf_label_mapping.pkl')
+    joblib.dump(trained_model, model_filename)
+    joblib.dump(label_map,     'rf_label_mapping.pkl')
 
     print(f"{'='*80}")
     print(f"✓ MODEL SAVED")
     print(f"{'='*80}")
-    print(f"Filename  : {model_filename}")
-    print(f"Size      : {Path(model_filename).stat().st_size / 1024:.1f} KB")
-    print(f"Classes   : {list(label_map.keys())}")
-    print(f"Features  : {len(feature_names)}")
-    print(f"Threshold : {vt_threshold:.4f}  (saved: rf_vt_threshold.pkl)")
+    print(f"Filename : {model_filename}")
+    print(f"Size     : {Path(model_filename).stat().st_size / 1024:.1f} KB")
+    print(f"Classes  : {list(label_map.keys())}")
+    print(f"Features : {len(feature_names)}")
     print(f"{'='*80}\n")
 
-    return trained_model, label_map, vt_threshold
+    return trained_model, label_map
 
 
 if __name__ == '__main__':
-    model, label_mapping, vt_threshold = main()
+    model, label_mapping = main()
