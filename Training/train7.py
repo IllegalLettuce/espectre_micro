@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
-from sklearn.model_selection import RandomizedSearchCV, GroupKFold
+from sklearn.model_selection import RandomizedSearchCV, GroupKFold, cross_val_predict
 from scipy.stats import randint
 from pathlib import Path
 import joblib
@@ -10,20 +10,12 @@ import joblib
 
 NULL_SUBCARRIER_INDICES = {0, 1, 2, 3, 4, 5, 27, 28, 29, 30, 31, 32, 33, 59, 60, 61, 62, 63}
 
-# VT_MEAN_IDX: variance_turb is aggregate index 2, mean is the 0th stat → 2*5+0 = 10
-VT_MEAN_IDX = 10
-
 # Normalisation strategy per aggregate feature index:
-#   LINEAR  (÷ sc_global_mean)  : iqr_turb, entropy_turb, amp_mean family
-#                                  These are amplitude-linear measures.
-#   QUADRATIC (÷ sc_global_mean²): variance_turb only.
-#                                  Variance of raw amplitudes scales with amp²,
-#                                  so a single linear division still leaves a
-#                                  residual amplitude dependency.
-#   NONE                         : skewness, kurtosis, phase_diff_*
-#                                  These are already dimensionless or relative.
-LINEAR_NORM_INDICES    = {0, 1, 5, 6, 7, 8, 9, 10}  # entropy, iqr, amp family
-QUADRATIC_NORM_INDICES = {2}                           # variance_turb
+#   LINEAR  (÷ sc_global_mean)  : entropy_turb(0), iqr_turb(1), amp family(5-10)
+#   QUADRATIC (÷ sc_global_mean²): variance_turb(2)
+#   NONE (raw)                  : skewness(3), kurtosis(4), phase_diff_*(11-14)
+LINEAR_NORM_INDICES    = {0, 1, 5, 6, 7, 8, 9, 10}
+QUADRATIC_NORM_INDICES = {2}
 
 
 def get_sc_feature_columns(dataframe):
@@ -53,15 +45,20 @@ def build_windowed_features(dataframe, aggregate_features, valid_sc_cols,
     """
     Build flat feature vectors from sliding windows over each session.
 
-    Normalisation per aggregate feature type:
-      - entropy_turb, iqr_turb, amp_mean family: divided by sc_global_mean
-        (amplitude-linear measures)
-      - variance_turb: divided by sc_global_mean² (scales with amplitude²)
-      - skewness, kurtosis, phase_diff_*: kept raw (dimensionless)
-      - Per-subcarrier amplitudes: divided by sc_global_mean
+    Normalisation is per-window so features are invariant to session-level
+    AGC drift, temperature shift, and time-of-day amplitude variation:
 
-    All normalisation is window-local (per-window sc_global_mean), making
-    features invariant to session-level AGC/temperature amplitude drift.
+      - Amplitude-linear aggregates (entropy, iqr, amp family):
+            ÷ sc_global_mean
+
+      - variance_turb:
+            ÷ sc_global_mean²  (variance scales with amplitude²)
+
+      - skewness, kurtosis, phase_diff_*:
+            kept raw (dimensionless)
+
+      - Per-subcarrier amplitudes:
+            ÷ sc_global_mean  (preserves relative spatial fingerprint)
 
     Returns X, y, and group IDs (one per source file) for GroupKFold.
     """
@@ -106,7 +103,6 @@ def build_windowed_features(dataframe, aggregate_features, valid_sc_cols,
             feats.extend(np.std(sc_norm,  axis=0).tolist())
 
             # 3. Spike features on variance_turb — 4
-            #    Divide by sc_global_mean² for the same reason as section 1
             vt      = agg_win[:, 2] / sc_global_mean2
             vt_mean = float(np.mean(vt))
             vt_max  = float(np.max(vt))
@@ -136,7 +132,14 @@ def build_windowed_features(dataframe, aggregate_features, valid_sc_cols,
     )
 
 
-def load_data_from_directories(base_dir='csv_data'):
+def load_all_data(base_dir='csv_data'):
+    """
+    Load all CSV files from all class directories and build windowed features
+    across the full dataset. No train/test split — all data is used for training.
+
+    GroupKFold CV inside the HPO search provides honest generalisation estimates
+    by ensuring each fold contains only unseen recording sessions.
+    """
     base_path = Path(base_dir)
 
     directory_mappings = {
@@ -158,8 +161,7 @@ def load_data_from_directories(base_dir='csv_data'):
     print(f"Loading data from: {base_path.absolute()}")
     print(f"{'='*80}\n")
 
-    all_dfs        = []
-    files_by_class = {}
+    all_dfs = []
 
     for dir_name, label_name in directory_mappings.items():
         dir_path  = base_path / dir_name
@@ -175,16 +177,13 @@ def load_data_from_directories(base_dir='csv_data'):
         print(f"📁 {dir_name}/ → Label: '{label_name}'")
         print(f"   Found {len(csv_files)} CSV file(s)")
 
-        files_by_class[label_name] = []
         total_samples = 0
-
         for csv_file in csv_files:
             try:
                 df = pd.read_csv(csv_file)
                 df['label']       = label_name
                 df['source_file'] = csv_file.name
                 all_dfs.append(df)
-                files_by_class[label_name].append((csv_file, df))
                 total_samples += len(df)
                 print(f"      ✓ {csv_file.name}: {len(df)} samples")
             except Exception as e:
@@ -233,76 +232,23 @@ def load_data_from_directories(base_dir='csv_data'):
     unique_labels = sorted(combined_df['label'].unique())
     label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
 
-    train_dfs, test_dfs = [], []
-
     print(f"\n{'='*80}")
-    print("SESSION-LEVEL TRAIN/TEST SPLIT")
+    print("BUILDING WINDOWS (full dataset)")
     print(f"{'='*80}")
-
-    for label_name, file_df_pairs in files_by_class.items():
-        door_state_groups = {}
-        for csv_file, df in file_df_pairs:
-            parts      = csv_file.stem.split('_')
-            door_state = '_'.join(parts[-5:-2])
-            door_state_groups.setdefault(door_state, []).append((csv_file, df))
-
-        print(f"\n  {label_name}:")
-
-        for door_state, pairs in sorted(door_state_groups.items()):
-            if len(pairs) < 2:
-                print(f"    ⚠️  {door_state}: only {len(pairs)} session — training only")
-                for _, df in pairs:
-                    train_dfs.append(df)
-                continue
-
-            test_csv, test_df = pairs[-1]
-            train_pairs       = pairs[:-1]
-            print(f"    {door_state} → test: {test_csv.name} ({len(test_df)} samples), "
-                  f"train: {len(train_pairs)} session(s)")
-            test_dfs.append(test_df)
-            for _, df in train_pairs:
-                train_dfs.append(df)
-
-    train_df = pd.concat(train_dfs, ignore_index=True)
-    test_df  = pd.concat(test_dfs,  ignore_index=True)
-
-    print(f"\n  Building training windows...")
-    X_train, y_train_labels, groups_train = build_windowed_features(
-        train_df, aggregate_features, valid_sc_cols, seq_len=28, stride=8)
-    y_train = np.array([label_mapping[l] for l in y_train_labels])
-
-    print(f"  Building test windows...")
-    X_test, y_test_labels, _ = build_windowed_features(
-        test_df, aggregate_features, valid_sc_cols, seq_len=28, stride=8)
-    y_test = np.array([label_mapping[l] for l in y_test_labels])
-
-    print(f"\n{'='*80}")
-    print("WINDOW SUMMARY")
-    print(f"{'='*80}")
-    print(f"  Training windows : {len(y_train)}")
-    print(f"  Test windows     : {len(y_test)}")
-    print(f"  Features/window  : {X_train.shape[1]}  (expected 142)")
+    X_all, y_all_labels, groups_all = build_windowed_features(
+        combined_df, aggregate_features, valid_sc_cols, seq_len=28, stride=8)
+    y_all = np.array([label_mapping[l] for l in y_all_labels])
 
     idx_to_label = {v: k for k, v in label_mapping.items()}
-    print(f"\n  Training class distribution:")
-    for idx in sorted(label_mapping.values()):
-        print(f"    {idx_to_label[idx]:15s}: {np.sum(y_train == idx):4d} windows")
-    print(f"\n  Test class distribution:")
-    for idx in sorted(label_mapping.values()):
-        print(f"    {idx_to_label[idx]:15s}: {np.sum(y_test == idx):4d} windows")
 
-    # Diagnostic: verify vt normalisation achieved train/test alignment
-    print(f"\n{'='*80}")
-    print("VARIANCE_TURB_MEAN DIAGNOSTIC (÷ sc_global_mean²)")
-    print(f"{'='*80}")
-    print(f"  {'Class':12s}  {'Split':6s}  {'mean':9s}  {'p10':9s}  {'p90':9s}  {'max':9s}")
-    for split_name, X, y in [('train', X_train, y_train), ('test', X_test, y_test)]:
-        for idx in sorted(label_mapping.values()):
-            mask = y == idx
-            vals = X[mask, VT_MEAN_IDX]
-            print(f"  {idx_to_label[idx]:12s}  {split_name:6s}  "
-                  f"{np.mean(vals):9.6f}  {np.percentile(vals,10):9.6f}  "
-                  f"{np.percentile(vals,90):9.6f}  {np.max(vals):9.6f}")
+    print(f"  Total windows    : {len(y_all)}")
+    print(f"  Features/window  : {X_all.shape[1]}  (expected 142)")
+    print(f"\n  Class distribution:")
+    for idx in sorted(label_mapping.values()):
+        count = np.sum(y_all == idx)
+        print(f"    {idx_to_label[idx]:15s}: {count:5d} windows ({count/len(y_all)*100:.1f}%)")
+
+    print(f"\n  Unique recording sessions (CV groups): {len(np.unique(groups_all))}")
 
     window_feature_names = (
         [f"{f}_{s}" for f in aggregate_features for s in ['mean', 'std', 'max', 'p25', 'p75']]
@@ -311,55 +257,48 @@ def load_data_from_directories(base_dir='csv_data'):
         + ['vt_max', 'vt_std', 'vt_spike_count', 'vt_snr', 'vt_trend']
     )
 
-    return X_train, X_test, y_train, y_test, window_feature_names, label_mapping, groups_train
+    return X_all, y_all, groups_all, window_feature_names, label_mapping
 
 
-def train_random_forest(X_train, X_test, y_train, y_test,
-                        feature_names, label_mapping, groups_train):
+def train_random_forest(X_all, y_all, groups_all, feature_names, label_mapping):
     """
-    Single 3-class Random Forest classifier.
+    Train a 3-class Random Forest on the full dataset.
 
-    No StandardScaler — RF is scale-invariant (split decisions use only
-    feature ordering). Scaling was causing distribution shift because the
-    scaler was fit on morning training sessions and applied to afternoon
-    test sessions. All amplitude invariance is handled in build_windowed_features
-    via per-window sc_global_mean / sc_global_mean² normalisation.
+    No train/test split — all data is used for training so the model sees
+    the full range of time-of-day, door states, and sessions.
 
-    The two-stage threshold approach was abandoned because Q1 (hallway motion)
-    is weak-motion that genuinely overlaps with Baseline in variance_turb space.
-    The RF uses all 142 features jointly (subcarrier spatial fingerprint +
-    turbulence statistics) to make this distinction where a single threshold
-    on one feature cannot.
+    Generalisation is estimated via session-aware GroupKFold CV inside the
+    HPO search (each CV fold holds out complete recording sessions, never
+    individual windows from a seen session).
+
+    No StandardScaler — RF is scale-invariant. All amplitude invariance is
+    handled in build_windowed_features via per-window sc_global_mean /
+    sc_global_mean² normalisation.
     """
     idx_to_label = {idx: label for label, idx in label_mapping.items()}
+    class_names  = [idx_to_label[i] for i in sorted(label_mapping.values())]
 
-    total = len(X_train) + len(X_test)
     print(f"{'='*80}")
-    print(f"TRAIN/TEST SPLIT")
-    print(f"{'='*80}")
-    print(f"Training set size: {len(X_train)} samples ({len(X_train)/total*100:.1f}%)")
-    print(f"Test set size:     {len(X_test)} samples ({len(X_test)/total*100:.1f}%)")
-
-    print(f"\n{'='*80}")
     print("HYPERPARAMETER SEARCH (RandomizedSearchCV + GroupKFold)")
     print(f"{'='*80}")
-    print(f"  Search iterations : 50")
-    print(f"  CV folds          : 5 (session-aware)")
+    print(f"  Total windows     : {len(y_all)}")
+    print(f"  Search iterations : 30")
+    print(f"  CV folds          : 5 (session-aware GroupKFold)")
     print(f"  Scoring           : balanced_accuracy")
     print(f"  n_jobs            : -1 (all cores)\n")
 
     param_dist = {
-        'n_estimators':      randint(100, 600),
-        'max_depth':         [8, 10, 12, 15, 20, None],
+        'n_estimators':      randint(100, 350),
+        'max_depth':         [8, 10, 12, 15, 20],
         'min_samples_split': randint(2, 20),
-        'min_samples_leaf':  randint(1, 10),
-        'max_features':      ['sqrt', 'log2', 0.3, 0.5],
+        'min_samples_leaf':  randint(2, 10),
+        'max_features':      ['sqrt', 'log2'],
     }
 
     search = RandomizedSearchCV(
         RandomForestClassifier(class_weight='balanced', random_state=42),
         param_distributions=param_dist,
-        n_iter=50,
+        n_iter=30,
         cv=GroupKFold(n_splits=5),
         scoring='balanced_accuracy',
         n_jobs=-1,
@@ -367,7 +306,7 @@ def train_random_forest(X_train, X_test, y_train, y_test,
         random_state=42,
     )
 
-    search.fit(X_train, y_train, groups=groups_train)
+    search.fit(X_all, y_all, groups=groups_all)
     best_model = search.best_estimator_
 
     print(f"\n  Best CV balanced_accuracy : {search.best_score_:.4f}")
@@ -375,35 +314,32 @@ def train_random_forest(X_train, X_test, y_train, y_test,
     for k, v in sorted(search.best_params_.items()):
         print(f"    {k:22s}: {v}")
 
-    y_pred_train = best_model.predict(X_train)
-    y_pred_test  = best_model.predict(X_test)
-
-    train_accuracy = accuracy_score(y_train, y_pred_train)
-    test_accuracy  = accuracy_score(y_test,  y_pred_test)
-
+    # ------------------------------------------------------------------ #
+    #  CV PREDICTIONS — honest per-class performance estimate             #
+    #  Uses the same GroupKFold so each window is predicted by a model    #
+    #  that never saw its source session during training.                 #
+    # ------------------------------------------------------------------ #
     print(f"\n{'='*80}")
-    print(f"RESULTS")
+    print("SESSION-AWARE CV PERFORMANCE ESTIMATE")
     print(f"{'='*80}")
-    print(f"Training Accuracy: {train_accuracy:.4f} ({train_accuracy*100:.2f}%)")
-    print(f"Test Accuracy:     {test_accuracy:.4f} ({test_accuracy*100:.2f}%)")
+    print("(Each window predicted by a fold that excluded its source session)\n")
 
-    gap = train_accuracy - test_accuracy
-    if gap > 0.1:
-        print(f"⚠️  Warning: Possible overfitting (train-test gap: {gap*100:.1f}%)")
-    else:
-        print(f"✓ Good generalization (train-test gap: {gap*100:.1f}%)")
+    y_cv_pred = cross_val_predict(
+        best_model,
+        X_all, y_all,
+        cv=GroupKFold(n_splits=5),
+        groups=groups_all,
+        n_jobs=-1,
+    )
 
-    class_names = [idx_to_label[i] for i in sorted(label_mapping.values())]
-
-    print(f"\n{'='*80}")
-    print("CLASSIFICATION REPORT (Test Set)")
-    print(f"{'='*80}")
-    print(classification_report(y_test, y_pred_test, target_names=class_names, digits=4))
+    cv_accuracy = accuracy_score(y_all, y_cv_pred)
+    print(f"CV Accuracy : {cv_accuracy:.4f} ({cv_accuracy*100:.2f}%)\n")
+    print(classification_report(y_all, y_cv_pred, target_names=class_names, digits=4))
 
     print(f"{'='*80}")
-    print("CONFUSION MATRIX (Test Set)")
+    print("CONFUSION MATRIX (CV predictions)")
     print(f"{'='*80}")
-    conf = confusion_matrix(y_test, y_pred_test)
+    conf = confusion_matrix(y_all, y_cv_pred)
     print(f"\n{'':20s}Predicted:")
     print(f"{'Actual:':20s}", end='')
     for cn in class_names:
@@ -415,6 +351,19 @@ def train_random_forest(X_train, X_test, y_train, y_test,
             print(f"{conf[i][j]:15d}", end='')
         print()
 
+    # ------------------------------------------------------------------ #
+    #  FINAL MODEL — retrained on ALL data with best hyperparameters      #
+    # ------------------------------------------------------------------ #
+    print(f"\n{'='*80}")
+    print("FINAL MODEL — retraining on full dataset with best parameters")
+    print(f"{'='*80}\n")
+
+    best_model.fit(X_all, y_all)
+    train_accuracy = accuracy_score(y_all, best_model.predict(X_all))
+    print(f"  Full-data training accuracy : {train_accuracy:.4f} ({train_accuracy*100:.2f}%)")
+    print(f"  (Expected to be high — model has seen all data)")
+
+    # Feature importances
     importance_indices = np.argsort(best_model.feature_importances_)[::-1]
     print(f"\n{'='*80}")
     print("FEATURE IMPORTANCES (Ranked)")
@@ -436,23 +385,27 @@ def main():
     print("ESPectre WiFi Sensing - Random Forest Classifier Training")
     print(f"{'='*80}\n")
 
-    X_train, X_test, y_train, y_test, feature_names, label_mapping, groups_train = \
-        load_data_from_directories('csv_data')
+    X_all, y_all, groups_all, feature_names, label_mapping = \
+        load_all_data('csv_data')
 
     trained_model, label_map = train_random_forest(
-        X_train, X_test, y_train, y_test, feature_names, label_mapping, groups_train)
+        X_all, y_all, groups_all, feature_names, label_mapping)
 
     model_filename = 'rf_spatial_classifier.pkl'
     joblib.dump(trained_model, model_filename)
     joblib.dump(label_map,     'rf_label_mapping.pkl')
+    joblib.dump(feature_names, 'rf_feature_names.pkl')
 
     print(f"{'='*80}")
     print(f"✓ MODEL SAVED")
     print(f"{'='*80}")
-    print(f"Filename : {model_filename}")
-    print(f"Size     : {Path(model_filename).stat().st_size / 1024:.1f} KB")
-    print(f"Classes  : {list(label_map.keys())}")
-    print(f"Features : {len(feature_names)}")
+    print(f"  Filename  : {model_filename}")
+    print(f"  Size      : {Path(model_filename).stat().st_size / 1024:.1f} KB")
+    print(f"  Classes   : {list(label_map.keys())}")
+    print(f"  Features  : {len(feature_names)}")
+    print(f"\n  Also saved:")
+    print(f"    rf_label_mapping.pkl  — class index ↔ name mapping")
+    print(f"    rf_feature_names.pkl  — feature name list (for debugging)")
     print(f"{'='*80}\n")
 
     return trained_model, label_map
