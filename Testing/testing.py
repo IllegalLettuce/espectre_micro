@@ -10,36 +10,111 @@ from datetime import datetime
 import base64
 import struct
 
+
 # ── Configuration ─────────────────────────────────────────────────────────────
-GROUND_TRUTH       = "Quadrant_1"
+GROUND_TRUTH       = "Baseline"
 WARMUP_SECONDS     = 3
 COLLECTION_SECONDS = 45
 
-MODEL_PATH  = 'rf_spatial_classifier.pkl'
-SCALER_PATH = 'rf_scaler.pkl'
+MODEL_PATH     = 'rf_spatial_classifier.pkl'
+LABEL_MAP_PATH = 'rf_label_mapping.pkl'
 
 
 # ── Model ─────────────────────────────────────────────────────────────────────
-model       = joblib.load(MODEL_PATH)
-scaler      = joblib.load(SCALER_PATH)
-LABEL_MAP   = {0: 'Baseline', 1: 'Quadrant_1', 2: 'Quadrant_2'}
-CLASS_NAMES = ['Baseline', 'Quadrant_1', 'Quadrant_2']
+model      = joblib.load(MODEL_PATH)
+raw_map    = joblib.load(LABEL_MAP_PATH)          # label → idx
+LABEL_MAP  = {v: k for k, v in raw_map.items()}   # idx   → label
+CLASS_NAMES = [LABEL_MAP[i] for i in sorted(LABEL_MAP)]
 
 print(f"Model loaded:  {MODEL_PATH}")
 print(f"Classes: {CLASS_NAMES}")
 print(f"Ground truth: '{GROUND_TRUTH}'")
-print(f"Model classes (raw): {model.classes_}")
+
 if GROUND_TRUTH not in CLASS_NAMES:
     raise ValueError(f"GROUND_TRUTH '{GROUND_TRUTH}' not in {CLASS_NAMES}")
+
 
 # ── Feature extraction ────────────────────────────────────────────────────────
 SEQ_LEN  = 28
 VALID_SC = [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,
             21,22,23,24,25,26,34,35,36,37,38,39,40,41,42,43]
-# ── CSV ────────────────────────────────────────────────────────
-NUM_SC_AMPS = 31
 SC_AMP_COLS = [f'sc_amp_{i}' for i in VALID_SC]
 
+# Normalisation strategy — must mirror train7.py exactly
+LINEAR_NORM_INDICES    = {0, 1, 5, 6, 7, 8, 9, 10}   # ÷ sc_global_mean
+QUADRATIC_NORM_INDICES = {2}                            # ÷ sc_global_mean²
+# indices 3,4,11-14: raw (dimensionless)
+
+AGG_FEATURES = [
+    "entropy_turb", "iqr_turb", "variance_turb",       # indices 0-2
+    "skewness", "kurtosis",                              # indices 3-4
+    "amp_mean", "amp_range", "amp_std",                  # indices 5-7
+    "amp_mean_low", "amp_mean_mid", "amp_mean_high",     # indices 8-10
+    "phase_diff_mean", "phase_diff_std",                 # indices 11-12
+    "phase_diff_range", "phase_diff_skew",               # indices 13-14
+]
+
+
+def extract_window_features(agg_buf, sc_buf):
+    """
+    Mirrors train7.py build_windowed_features exactly.
+
+    Per-window normalisation:
+      - Amplitude-linear aggregates (entropy, iqr, amp family) : ÷ sc_global_mean
+      - variance_turb                                           : ÷ sc_global_mean²
+      - skewness, kurtosis, phase_diff_*                        : raw (dimensionless)
+      - Per-subcarrier amplitudes                               : ÷ sc_global_mean
+    """
+    agg_arr = np.array([[row[f] for f in AGG_FEATURES]
+                        for row in agg_buf], dtype='float32')
+    sc_arr  = np.array(sc_buf, dtype='float32')
+
+    sc_global_mean  = float(np.mean(sc_arr)) + 1e-6
+    sc_global_mean2 = sc_global_mean ** 2
+
+    feats = []
+
+    # 1. Aggregate feature stats — 15 × 5 = 75
+    for i in range(agg_arr.shape[1]):
+        col = agg_arr[:, i].copy()
+        if i in QUADRATIC_NORM_INDICES:
+            col = col / sc_global_mean2
+        elif i in LINEAR_NORM_INDICES:
+            col = col / sc_global_mean
+        feats += [
+            float(np.mean(col)),
+            float(np.std(col)),
+            float(np.max(col)),
+            float(np.percentile(col, 25)),
+            float(np.percentile(col, 75)),
+        ]
+
+    # 2. Per-subcarrier normalised mean + std — 31 × 2 = 62
+    sc_norm = sc_arr / sc_global_mean
+    feats.extend(np.mean(sc_norm, axis=0).tolist())
+    feats.extend(np.std(sc_norm,  axis=0).tolist())
+
+    # 3. Spike features on variance_turb — 4
+    vt      = agg_arr[:, 2] / sc_global_mean2
+    vt_mean = float(np.mean(vt))
+    vt_max  = float(np.max(vt))
+    vt_std  = float(np.std(vt))
+    feats  += [
+        vt_max,
+        vt_std,
+        float(np.sum(vt > vt_mean + 2 * vt_std)),
+        float(vt_max / (vt_mean + 1e-9)),
+    ]
+
+    # 4. Temporal trend — 1
+    half = SEQ_LEN // 2
+    feats.append(float(np.mean(vt[half:]) - np.mean(vt[:half])))
+
+    # Total: 75 + 62 + 4 + 1 = 142
+    return np.array(feats, dtype='float32')
+
+
+# ── CSV ───────────────────────────────────────────────────────────────────────
 csv_filename = f'csi_eval_{GROUND_TRUTH}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.csv'
 csv_file     = open(csv_filename, 'a', newline='')
 csv_writer   = csv.writer(csv_file)
@@ -51,11 +126,11 @@ csv_writer.writerow([
     'amp_mean', 'amp_range', 'amp_std',
     'amp_mean_low', 'amp_mean_mid', 'amp_mean_high',
     *SC_AMP_COLS,
-    'phase_mean', 'phase_std', 'phase_range',
+    'phase_diff_mean', 'phase_diff_std', 'phase_diff_range',
     'ground_truth', 'predicted', 'correct',
     'conf_baseline', 'conf_quadrant1', 'conf_quadrant2', 'confidence',
     'inference_ms',
-    'mqtt_transport_ms',   # ESP32 publish → laptop receipt
+    'mqtt_transport_ms',
     'payload_bytes',
     'esp32_pps',
     'packets_dropped',
@@ -63,63 +138,22 @@ csv_writer.writerow([
 print(f"CSV: {csv_filename}\n")
 
 
-AGG_FEATURES = [
-    "entropy_turb", "iqr_turb", "variance_turb",
-    "skewness", "kurtosis",
-    "amp_mean", "amp_range", "amp_std",
-    "amp_mean_low", "amp_mean_mid", "amp_mean_high",
-    "phase_diff_mean", "phase_diff_std",
-    "phase_diff_range", "phase_diff_skew",
-]
-
-
-
-def extract_window_features(agg_buf, sc_buf):
-    agg_arr = np.array([[row[f] for f in AGG_FEATURES] for row in agg_buf], dtype='float32')
-    sc_arr = np.array([frame for frame in sc_buf], dtype='float32')
-
-
-    feats = []
-    for i in range(agg_arr.shape[1]):
-        col = agg_arr[:, i]
-        feats += [float(np.mean(col)), float(np.std(col)), float(np.max(col)),
-                  float(np.percentile(col, 25)), float(np.percentile(col, 75))]
-
-    feats.extend(np.mean(sc_arr, axis=0).tolist())
-    feats.extend(np.std(sc_arr,  axis=0).tolist())
-
-    vt      = agg_arr[:, 2]
-    vt_mean = float(np.mean(vt))
-    vt_max  = float(np.max(vt))
-    vt_std  = float(np.std(vt))
-    feats  += [vt_max, vt_std, float(np.sum(vt > vt_mean + 2*vt_std)),
-               float(vt_max / (vt_mean + 1e-6))]
-
-    half = SEQ_LEN // 2
-    feats.append(float(np.mean(vt[half:]) - np.mean(vt[:half])))
-
-    return np.array(feats, dtype='float32')
-
-
 # ── State ─────────────────────────────────────────────────────────────────────
-agg_buffer  = deque(maxlen=SEQ_LEN)
-sc_buffer   = deque(maxlen=SEQ_LEN)              
+agg_buffer = deque(maxlen=SEQ_LEN)
+sc_buffer  = deque(maxlen=SEQ_LEN)
 
 warmup_complete   = False
 collection_active = False
 collection_start  = None
 
-results      = []
-pred_counts  = {c: 0 for c in CLASS_NAMES}
-latency_log  = []        # inference_ms
-transport_log = []       # mqtt_transport_ms
-traffic_log  = []        # payload bytes
-msg_times    = []        # wall-clock arrival time of every message
-pps_log      = []
-dropped_log  = []
-
-# Clock offset — computed once from first message
-clock_offset_ms = None   # wall_clock_ms - esp32_boot_ms
+results       = []
+pred_counts   = {c: 0 for c in CLASS_NAMES}
+latency_log   = []
+transport_log = []
+traffic_log   = []
+msg_times     = []
+pps_log       = []
+dropped_log   = []
 
 
 # ── Timers ────────────────────────────────────────────────────────────────────
@@ -144,10 +178,10 @@ def stop_collection():
 
     # ── Traffic ───────────────────────────────────────────────────────────
     if traffic_log and msg_times:
-        avg_bytes  = np.mean(traffic_log)
-        duration   = msg_times[-1] - msg_times[0] if len(msg_times) > 1 else COLLECTION_SECONDS
-        actual_hz  = len(msg_times) / duration
-        kbps       = (avg_bytes * actual_hz) / 1024
+        avg_bytes = np.mean(traffic_log)
+        duration  = msg_times[-1] - msg_times[0] if len(msg_times) > 1 else COLLECTION_SECONDS
+        actual_hz = len(msg_times) / duration
+        kbps      = (avg_bytes * actual_hz) / 1024
 
         print(f"\n{'='*65}")
         print(f"  TRAFFIC MEASUREMENT  (NFR5 — must be < 25 KB/s)")
@@ -229,9 +263,8 @@ def on_connect(client, userdata, flags, rc):
         print(f"Subscribed — warmup {WARMUP_SECONDS}s...")
         threading.Timer(WARMUP_SECONDS, start_collection).start()
 
-def on_message(client, userdata, msg):
-    global clock_offset_ms
 
+def on_message(client, userdata, msg):
     recv_wall_ms  = time.time() * 1000
     payload_bytes = len(msg.payload)
     traffic_log.append(payload_bytes)
@@ -251,17 +284,16 @@ def on_message(client, userdata, msg):
     if not warmup_complete:
         return
 
-    f       = payload['features']
+    f      = payload['features']
     sc_raw = f.get('sc_amps', '')
     if isinstance(sc_raw, str) and sc_raw:
-        buf = base64.b64decode(sc_raw)
+        buf     = base64.b64decode(sc_raw)
         decoded = [struct.unpack_from('>H', buf, i * 2)[0] / 100.0
-                for i in range(len(buf) // 2)]
+                   for i in range(len(buf) // 2)]
     else:
         decoded = sc_raw if isinstance(sc_raw, list) else []
 
     sc_amps = [float(decoded[i]) if i < len(decoded) else 0.0 for i in VALID_SC]
-
 
     agg_buffer.append({feat: f.get(feat, 0.0) for feat in AGG_FEATURES})
     sc_buffer.append(sc_amps)
@@ -275,11 +307,10 @@ def on_message(client, userdata, msg):
         return
 
     # ── Inference ─────────────────────────────────────────────────────────
-    t0              = time.time()
-    features        = extract_window_features(list(agg_buffer), list(sc_buffer))
-    features_scaled = scaler.transform(features.reshape(1, -1))
-    proba           = model.predict_proba(features_scaled)[0]
-    pipeline_ms     = (time.time() - t0) * 1000   
+    t0       = time.time()
+    features = extract_window_features(list(agg_buffer), list(sc_buffer))
+    proba    = model.predict_proba(features.reshape(1, -1))[0]
+    infer_ms = (time.time() - t0) * 1000
 
     pred_idx = int(np.argmax(proba))
     pred     = LABEL_MAP[pred_idx]
@@ -287,28 +318,29 @@ def on_message(client, userdata, msg):
     correct  = pred == GROUND_TRUTH
 
     prob_map = {LABEL_MAP[i]: float(proba[i]) for i in range(len(proba))}
-    latency_log.append(pipeline_ms)
+    latency_log.append(infer_ms)
     results.append((pred, conf, correct, proba))
     pred_counts[pred] += 1
 
     latest = list(agg_buffer)[-1]
     csv_writer.writerow([
         datetime.now().isoformat(),
-        latest.get('entropy_turb', 0), latest.get('iqr_turb', 0),
-        latest.get('variance_turb', 0), latest.get('skewness', 0),
-        latest.get('kurtosis', 0), latest.get('amp_mean', 0),
-        latest.get('amp_range', 0), latest.get('amp_std', 0),
-        latest.get('amp_mean_low', 0), latest.get('amp_mean_mid', 0),
-        latest.get('amp_mean_high', 0),
+        latest.get('entropy_turb',   0), latest.get('iqr_turb',       0),
+        latest.get('variance_turb',  0), latest.get('skewness',        0),
+        latest.get('kurtosis',       0), latest.get('amp_mean',        0),
+        latest.get('amp_range',      0), latest.get('amp_std',         0),
+        latest.get('amp_mean_low',   0), latest.get('amp_mean_mid',    0),
+        latest.get('amp_mean_high',  0),
         *sc_amps,
-        f.get('phase_mean', 0), f.get('phase_std', 0), f.get('phase_range', 0),
+        f.get('phase_diff_mean',  0), f.get('phase_diff_std',   0),
+        f.get('phase_diff_range', 0),
         GROUND_TRUTH, pred, correct,
         round(prob_map.get('Baseline',   0), 4),
         round(prob_map.get('Quadrant_1', 0), 4),
         round(prob_map.get('Quadrant_2', 0), 4),
         round(conf, 4),
-        round(pipeline_ms, 3),
-        '',                              
+        round(infer_ms, 3),
+        '',
         payload_bytes,
         payload.get('pps', ''),
         payload.get('packets_dropped', ''),
@@ -328,9 +360,8 @@ def on_message(client, userdata, msg):
         f"B={prob_map['Baseline']:.2f} Q1={prob_map['Quadrant_1']:.2f} "
         f"Q2={prob_map['Quadrant_2']:.2f} | "
         f"{remaining:.0f}s left | acc={running_acc:.1f}% | "
-        f"infer={pipeline_ms:.1f}ms | {payload_bytes}B"   
+        f"infer={infer_ms:.1f}ms | {payload_bytes}B"
     )
-
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
