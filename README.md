@@ -1,8 +1,18 @@
 # ESPectre WiFi Sensing System
 
-> Built on top of the original [ESPectre](https://github.com/EdoardoLuciani/espetre) project by Edoardo Luciani.
+> Built on top of the original [ESPectre](https://github.com/EdoardoLuciani/espectre) project by Edoardo Luciani.
 
-A passive, infrastructure-free room-level occupancy and motion localisation system using WiFi Channel State Information (CSI) collected from a single ESP32 node. No cameras, no PIR sensors, no wearables — just the existing WiFi signal. No modifications of router needed either, this works on any commerical router.
+A room-level Wi-Fi motion sensing and spatial classification system using Wi-Fi Channel State Information (CSI) collected from a single ESP32-S3 node and processed through a distributed pipeline. The final validated prototype operates in a single-room deployment using commodity hardware, without requiring router firmware modification.
+
+---
+
+## Project Status
+
+- Final validated prototype: single-room deployment.
+- Implemented sensing node: Room B.
+- Spatial classes: no motion, zone 1, and zone 2.
+- Inference pipeline: ESP32-S3 feature extraction + MQTT + AppDaemon Random Forest inference.
+- Future work: second ESP32 node for full two-room deployment.
 
 ---
 
@@ -14,36 +24,37 @@ The system exploits the fact that human movement disturbs the multipath propagat
 - **Quadrant 1** — movement in the hallway area
 - **Quadrant 2** — movement in the stairway area
 
-Classification runs continuously in Home Assistant at ~30 predictions per second, with results exposed as a sensor entity that can trigger automations.
+Classification runs continuously in Home Assistant at approximately 20--30 predictions per second, with results exposed as a sensor entity that can trigger automations.
 
 ---
 
 ## System Architecture
+> Final validated prototype: single-room deployment (Room B), with architecture designed for future two-room expansion.
 ```
 ┌─────────────────────┐         MQTT          ┌──────────────────────────────┐
-│     ESP32-S3/C6     │  ──────────────────►  │      Home Assistant          │
-│                     │                       │                              │
-│  -  Collects CSI    │   JSON payload        │  -  AppDaemon CSI Classifier │
-│  -  64 subcarriers  │   ~30 Hz              │  -  Random Forest inference  │
-│  -  HT20 / 802.11n  │                       │  -  Sensor entity output     │
-│  -  MVS/PCA motion  │                       │  -  Lovelace dashboard       │
-│    detection        │                       │  -  Automation triggers      │
+│      ESP32-S3       │  ──────────────────►  │   Raspberry Pi / Home        │
+│                     │                       │   Assistant Pipeline          │
+│ - Collects CSI      │   JSON payload        │                              │
+│ - CSI feature       │   ~20–30 Hz           │ - AppDaemon classifier       │
+│   extraction        │                       │ - Random Forest inference    │
+│ - Fixed BSSID       │                       │ - Sensor entity output       │
+│ - Autonomous boot   │                       │ - Lovelace dashboard         │
 └─────────────────────┘                       └──────────────────────────────┘
-                                                            ▲
-                                                            │  .pkl model deploy
-                                                            │
-                                               ┌────────────────────────┐
-                                               │   Training (Laptop)    │
-                                               │                        │
-                                               │ -  CSV data collection │
-                                               │ -  Windowed features   │
-                                               │ -  Session-level split │
-                                               │ -  RF training script  │
-                                               └────────────────────────┘
+                                                           ▲
+                                                           │  .pkl model deploy
+                                                           │
+                                              ┌──────────────────────────────┐
+                                              │      Training (Laptop)       │
+                                              │                              │
+                                              │ - CSV data collection        │
+                                              │ - Windowed feature pipeline  │
+                                              │ - Session-aware split        │
+                                              │ - Model training/export      │
+                                              └──────────────────────────────┘
 ```
 
 ### ESP32 Node
-The ESP32 operates in STA mode, connected to a fixed mesh node (BSSID-pinned to prevent mid-session roaming between nodes). It continuously generates UDP traffic to the AP to stimulate CSI feedback, collects raw CSI frames via the `csi_enable()` API, applies Moving Variance Segmentation (MVS) or PCA-based motion detection, and publishes aggregated feature vectors to an MQTT topic at approximately 30 Hz.
+The ESP32-S3 operates in STA mode and is pinned to a fixed mesh BSSID to prevent mid-session roaming between nodes, which was identified as an important stability issue during implementation. It continuously stimulates CSI feedback, extracts CSI features using a modified *Micro-ESPectre* build, and publishes aggregated feature vectors to an MQTT topic as serialised JSON payloads. In the final architecture, the ESP32 performs CSI extraction and feature pre-processing rather than full classification inference.
 
 ```
 
@@ -68,50 +79,11 @@ The ESP32 operates in STA mode, connected to a fixed mesh node (BSSID-pinned to 
         "phase_range": 6.1835,
         "phase_std": 1.8598,
         "sc_amps": [
-            18.44,
-            18.36,
-            17.03,
-            15.26,
-            14.32,
-            14.04,
-            13.0,
-            12.81,
-            13.04,
-            11.4,
-            12.04,
-            10.77,
-            10.63,
-            10.3,
-            10.2,
-            10.05,
-            8.54,
-            8.6,
-            7.21,
-            6.32,
-            6.08,
-            7.81,
-            8.06,
-            7.28,
-            8.0,
-            8.54,
-            8.94,
-            8.49,
-            8.94,
-            9.22,
-            9.06,
-            9.22,
-            9.85,
-            7.81,
-            9.22,
-            8.94,
-            9.22,
-            10.05,
-            9.49,
-            10.3,
-            10.63,
-            11.66,
-            11.4,
-            11.0
+            18.44, 18.36, 17.03, 15.26, 14.32, 14.04, 13.0, 12.81, 13.04,
+            11.4, 12.04, 10.77, 10.63, 10.3, 10.2, 10.05, 8.54, 8.6, 7.21,
+            6.32, 6.08, 7.81, 8.06, 7.28, 8.0, 8.54, 8.94, 8.49, 8.94,
+            9.22, 9.06, 9.22, 9.85, 7.81, 9.22, 8.94, 9.22, 10.05, 9.49,
+            10.3, 10.63, 11.66, 11.4, 11.0
         ],
         "skewness": 5.489,
         "variance_turb": 0.287
@@ -129,7 +101,7 @@ The ESP32 operates in STA mode, connected to a fixed mesh node (BSSID-pinned to 
 }
 ```
 ### Home Assistant Classifier
-An AppDaemon app subscribes to the MQTT topic and feeds incoming feature vectors into the loaded Random Forest model. Each prediction is published back as a Home Assistant sensor entity (`sensor.csi_location`) with confidence scores for each class. The Lovelace dashboard visualises real-time predictions, confidence levels, and recent prediction history using a 3d model of the room.
+An *AppDaemon* app subscribes to the MQTT topic and feeds incoming feature vectors into the deployed Random Forest model running on the Raspberry Pi / Home Assistant stack. Each prediction is published back as a Home Assistant sensor entity such as `sensor.csi_location`, which is then visualised through a Lovelace dashboard. The final thesis implementation uses this distributed architecture because full classification on the ESP32 was re-scoped during implementation.
 
 | Baseline | Quadrant 1 (Hallway) | Quadrant 2 (Stairs) |
 |:---:|:---:|:---:|
@@ -137,7 +109,7 @@ An AppDaemon app subscribes to the MQTT topic and feeds incoming feature vectors
 | No movement detected | Movement in hallway | Movement on stairs |
 
 ### Training Pipeline
-CSI data is recorded to CSV files on the laptop, organised by class and door state condition. A windowed feature extraction pipeline (window size 28 frames, stride 8) builds per-window feature vectors from 11 aggregate CSI statistics and 44 valid subcarrier amplitudes, yielding 148 features per window. The dataset is split at the **session level** (not window level) to prevent data leakage between train and test sets. The trained scaler and model are exported as `.pkl` files and deployed to Home Assistant manually.
+CSI data is recorded to CSV files on a laptop and organised by class and door-state condition. A windowed feature extraction pipeline builds per-window feature vectors from aggregate CSI statistics and valid subcarrier amplitudes, and the dataset is split at the session level rather than the window level to avoid data leakage. The trained model is exported as `.pkl` files and manually deployed to the Home Assistant / AppDaemon environment for live inference.
 
 ---
 
@@ -188,7 +160,7 @@ Each door state requires a minimum of **3 sessions per class** to provide suffic
 
 ## Model Performance
 
-The current model achieves **97.91% test accuracy** on a fully held-out recording session (session-level split), with 0 baseline misclassifications and minimal Q1/Q2 confusion. Performance is evaluated using a session-held-out strategy — the most recent session per class is reserved as the test set and never windowed alongside training data.
+In the final thesis evaluation, the system achieved over 90% spatial classification accuracy in the validated single-room deployment. Physical testing reported active-zone accuracies of 92.3% for zone 1 and 90.9% for zone 2, while average network traffic remained 18.49 KB/s with a measured peak of 21.50 KB/s, staying within the stated 25 KB/s constraint. Mean inference latency was 17.50 ms, with p95 latency of 24.00 ms and a maximum observed latency of 145.34 ms.
 
 ---
 
@@ -226,7 +198,13 @@ The current model achieves **97.91% test accuracy** on a fully held-out recordin
 8. Restart AppDaemon — the `sensor.csi_location` entity will appear in HA
 
 ---
+## Notes
 
+- The validated thesis prototype is a single-room deployment rather than the originally planned full two-room implementation.
+- The architecture and code remain compatible with a second ESP32 node for future expansion.
+- The implementation was validated on a commodity Starlink Gen 2 mesh network without router firmware modification.
+
+---
 ## Credits
 
 This project extends the original [ESPectre](https://github.com/EdoardoLuciani/espetre) WiFi CSI sensing framework by Edoardo Luciani, adapting it for room-level localisation on ESP32-S3/C6 hardware with a custom Home Assistant integration and Random Forest classifier pipeline.
